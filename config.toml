@@ -1,6 +1,16 @@
+# Data Lake / S3 location
+# bucket = S3 bucket name
+# base_prefix = root path inside the bucket
 bucket = "datalake-eu-central-1-vt-prod"
 base_prefix = "639r-ait"
 
+# Device folders to scan.
+# Each device must have:
+# <folder>/toBeProcessed/
+# <folder>/processed/
+#
+# The folder name is used for the S3 path.
+# The device name is written into file_index.csv.
 [[devices]]
 device = "Keyence LM-X"
 folder = "Keyence_LMX"
@@ -17,5 +27,12 @@ folder = "Keyence_VR5200"
 device = "Keyence VHX"
 folder = "Keyence_VHX"
 
+# Product-specific recipe folders.
+# If a file is located inside one of these folders,
+# product_area will be set to the mapped value.
+#
+# Example:
+# Keyence_VR5200/toBeProcessed/EMB_Gan_Prüfvorlage_zit/...
+# -> product_area = "EMB_Gan"
 [product_rules]
 "EMB_Gan_Prüfvorlage_zit" = "EMB_Gan"
