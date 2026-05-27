@@ -44,16 +44,11 @@ def create_processed_key(source_key: str, to_be_processed_prefix: str, processed
     relative_key = source_key.replace(to_be_processed_prefix, "", 1)
     parts = relative_key.split("/")
 
-    # Product-specific wrapper output:
-    # Recipe_zit/data_lake_ready/ProductFolder/artifact
-    # -> processed/Recipe_zit/artifact
     if len(parts) >= 4 and parts[1] == "data_lake_ready":
         recipe_folder = parts[0]
         file_name = parts[-1]
         return f"{processed_prefix}{recipe_folder}/{file_name}"
 
-    # General files:
-    # toBeProcessed/random.txt -> processed/random.txt
     return f"{processed_prefix}{relative_key}"
 
 
@@ -71,7 +66,6 @@ def copy_and_verify_object(s3_client, bucket: str, source_key: str, target_key: 
         CopySource={"Bucket": bucket, "Key": source_key},
         Key=target_key,
     )
-
     return object_exists(s3_client, bucket, target_key)
 
 
@@ -123,6 +117,7 @@ def collect_rows_for_device(
             continue
 
         product_area = detect_product_area(source_key, product_rules)
+
         target_key = create_processed_key(
             source_key=source_key,
             to_be_processed_prefix=to_be_processed_prefix,
@@ -139,6 +134,13 @@ def collect_rows_for_device(
         if not copied_ok:
             print(f"Copy verification failed: {source_key}")
             continue
+
+        s3_client.delete_object(
+            Bucket=bucket,
+            Key=source_key,
+        )
+
+        print(f"Moved: {source_key} -> {target_key}")
 
         rows.append(
             create_file_row(
@@ -188,8 +190,7 @@ def main() -> None:
     write_csv(all_rows)
 
     print(f"Created {OUTPUT_CSV}")
-    print(f"Copied and indexed files: {len(all_rows)}")
-    print("Source deletion is still disabled.")
+    print(f"Moved and indexed files: {len(all_rows)}")
 
 
 if __name__ == "__main__":
