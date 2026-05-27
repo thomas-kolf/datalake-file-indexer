@@ -1,1 +1,5 @@
 file_name,extension,indexed_timestamp,device,product_area,file_path,download_link
+vr_test.xlsx,xlsx,2026-05-27 11:53:21,Keyence VR5200,General,data_lake_mock\Keyence_VR5200\processed\vr_test.xlsx,datalakedownloader://download?path=data_lake_mock%5CKeyence_VR5200%5Cprocessed%5Cvr_test.xlsx
+gan_random_name.png,png,2026-05-27 11:53:21,Keyence VR5200,GaN_Emb,data_lake_mock\Keyence_VR5200\processed\GaN_Emb\gan_random_name.png,datalakedownloader://download?path=data_lake_mock%5CKeyence_VR5200%5Cprocessed%5CGaN_Emb%5Cgan_random_name.png
+lmx_scan.csv,csv,2026-05-27 11:53:21,Keyence LM-X,General,data_lake_mock\Keyence_LMX\processed\lmx_scan.csv,datalakedownloader://download?path=data_lake_mock%5CKeyence_LMX%5Cprocessed%5Clmx_scan.csv
+olympus_image.jpeg,jpeg,2026-05-27 11:53:21,Olympus,General,data_lake_mock\Olympus\processed\olympus_image.jpeg,datalakedownloader://download?path=data_lake_mock%5COlympus%5Cprocessed%5Colympus_image.jpeg
