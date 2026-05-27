@@ -1,0 +1,21 @@
+bucket = "datalake-eu-central-1-vt-prod"
+base_prefix = "639r-ait"
+
+[[devices]]
+device = "Keyence LM-X"
+folder = "Keyence_LMX"
+
+[[devices]]
+device = "Olympus DSX1000"
+folder = "Olympus_DSX1000"
+
+[[devices]]
+device = "Keyence VR5200"
+folder = "Keyence_VR5200"
+
+[[devices]]
+device = "Keyence VHX"
+folder = "Keyence_VHX"
+
+[product_rules]
+"EMB_Gan_Prüfvorlage_zit" = "EMB_Gan"
