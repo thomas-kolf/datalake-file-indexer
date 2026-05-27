@@ -26,7 +26,7 @@ def reset_local_test_data() -> None:
         device_path = BASE_DIR / device
 
         if device_path.exists():
-            shutil.rmtree(device_path)
+            shutil.rmtree(device_path, ignore_errors=True)
 
         (device_path / "toBeProcessed").mkdir(parents=True, exist_ok=True)
         (device_path / "processed").mkdir(parents=True, exist_ok=True)
