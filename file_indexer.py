@@ -1,3 +1,11 @@
+# Scans Data Lake machine folders for files inside toBeProcessed,
+# detects whether files belong to a product-specific recipe folder
+# or are general machine files, copies verified files into the
+# corresponding processed folder structure, deletes the originals
+# after successful verification, and generates a global
+# Power BI-ready file_index.csv containing searchable file metadata
+# and download links for downstream discovery and referencing.
+
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote
