@@ -1,27 +1,12 @@
-from pathlib import Path
 from datetime import datetime
+from pathlib import Path
 from urllib.parse import quote
 import csv
-import shutil
+import boto3
+import tomllib
 
-BASE_DIR = Path("data_lake_mock")
-
-OUTPUT_DIR = BASE_DIR / "file_index_exports"
-
-DEVICE_CONFIGS = [
-    {
-        "device": "Keyence VR5200",
-        "folder": "Keyence_VR5200",
-    },
-    {
-        "device": "Keyence LM-X",
-        "folder": "Keyence_LMX",
-    },
-    {
-        "device": "Olympus",
-        "folder": "Olympus",
-    },
-]
+CONFIG_PATH = "config.toml"
+OUTPUT_CSV = "file_index.csv"
 
 COLUMNS = [
     "file_name",
@@ -34,83 +19,185 @@ COLUMNS = [
 ]
 
 
+def load_config() -> dict:
+    with open(CONFIG_PATH, "rb") as file:
+        return tomllib.load(file)
+
+
 def build_download_link(file_path: str) -> str:
     encoded_path = quote(file_path, safe="")
     return f"datalakedownloader://download?path={encoded_path}"
 
 
-def detect_product_area(file_path: Path) -> str:
-    path_text = str(file_path).lower()
+def is_recipe_file(key: str) -> bool:
+    return key.lower().endswith(".zit")
 
-    if "gan_emb" in path_text or "gan_celle" in path_text:
-        return "GaN_Emb"
+
+def detect_product_area(key: str, product_rules: dict) -> str:
+    for recipe_folder, product_area in product_rules.items():
+        if f"/{recipe_folder}/" in key:
+            return product_area
 
     return "General"
 
 
-def process_device(config: dict, indexed_timestamp: str) -> list[dict]:
+def create_processed_key(source_key: str, to_be_processed_prefix: str, processed_prefix: str) -> str:
+    relative_key = source_key.replace(to_be_processed_prefix, "", 1)
+    parts = relative_key.split("/")
+
+    # Product-specific wrapper output:
+    # Recipe_zit/data_lake_ready/ProductFolder/artifact
+    # -> processed/Recipe_zit/artifact
+    if len(parts) >= 4 and parts[1] == "data_lake_ready":
+        recipe_folder = parts[0]
+        file_name = parts[-1]
+        return f"{processed_prefix}{recipe_folder}/{file_name}"
+
+    # General files:
+    # toBeProcessed/random.txt -> processed/random.txt
+    return f"{processed_prefix}{relative_key}"
+
+
+def object_exists(s3_client, bucket: str, key: str) -> bool:
+    try:
+        s3_client.head_object(Bucket=bucket, Key=key)
+        return True
+    except Exception:
+        return False
+
+
+def copy_and_verify_object(s3_client, bucket: str, source_key: str, target_key: str) -> bool:
+    s3_client.copy_object(
+        Bucket=bucket,
+        CopySource={"Bucket": bucket, "Key": source_key},
+        Key=target_key,
+    )
+
+    return object_exists(s3_client, bucket, target_key)
+
+
+def create_file_row(
+    target_key: str,
+    bucket: str,
+    device: str,
+    product_area: str,
+    indexed_timestamp: str,
+) -> dict:
+    file_name = Path(target_key).name
+    extension = Path(file_name).suffix.replace(".", "").lower()
+    file_path = f"s3://{bucket}/{target_key}"
+
+    return {
+        "file_name": file_name,
+        "extension": extension,
+        "indexed_timestamp": indexed_timestamp,
+        "device": device,
+        "product_area": product_area,
+        "file_path": file_path,
+        "download_link": build_download_link(file_path),
+    }
+
+
+def collect_rows_for_device(
+    s3_client,
+    bucket: str,
+    base_prefix: str,
+    config: dict,
+    product_rules: dict,
+    indexed_timestamp: str,
+) -> list[dict]:
     rows = []
 
-    device_folder = BASE_DIR / config["folder"]
-    to_be_processed = device_folder / "to_be_processed"
-    processed = device_folder / "processed"
+    device_folder = config["folder"]
+    to_be_processed_prefix = f"{base_prefix}/{device_folder}/toBeProcessed/"
+    processed_prefix = f"{base_prefix}/{device_folder}/processed/"
 
-    processed.mkdir(parents=True, exist_ok=True)
+    response = s3_client.list_objects_v2(
+        Bucket=bucket,
+        Prefix=to_be_processed_prefix,
+    )
 
-    if not to_be_processed.exists():
-        print(f"Skipped missing folder: {to_be_processed}")
-        return rows
+    for obj in response.get("Contents", []):
+        source_key = obj["Key"]
 
-    for source_path in to_be_processed.rglob("*"):
-        if not source_path.is_file():
+        if source_key.endswith("/") or is_recipe_file(source_key):
             continue
 
-        relative_path = source_path.relative_to(to_be_processed)
-        target_path = processed / relative_path
-        target_path.parent.mkdir(parents=True, exist_ok=True)
+        product_area = detect_product_area(source_key, product_rules)
 
-        shutil.move(str(source_path), str(target_path))
+        target_key = create_processed_key(
+            source_key=source_key,
+            to_be_processed_prefix=to_be_processed_prefix,
+            processed_prefix=processed_prefix,
+        )
 
-        file_path = str(target_path)
+        copied_ok = copy_and_verify_object(
+            s3_client=s3_client,
+            bucket=bucket,
+            source_key=source_key,
+            target_key=target_key,
+        )
 
-        rows.append({
-            "file_name": target_path.name,
-            "extension": target_path.suffix.replace(".", "").lower(),
-            "indexed_timestamp": indexed_timestamp,
-            "device": config["device"],
-            "product_area": detect_product_area(target_path),
-            "file_path": file_path,
-            "download_link": build_download_link(file_path),
-        })
+        if not copied_ok:
+            print(f"Copy verification failed: {source_key}")
+            continue
+
+        s3_client.delete_object(
+            Bucket=bucket,
+            Key=source_key,
+        )
+
+        print(f"Moved: {source_key} -> {target_key}")
+
+        rows.append(
+            create_file_row(
+                target_key=target_key,
+                bucket=bucket,
+                device=config["device"],
+                product_area=product_area,
+                indexed_timestamp=indexed_timestamp,
+            )
+        )
 
     return rows
 
 
-def write_file_index(rows: list[dict]) -> Path:
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-
-    output_path = OUTPUT_DIR / "file_index.csv"
-
-    with output_path.open("w", newline="", encoding="utf-8") as file:
+def write_csv(rows: list[dict]) -> None:
+    with open(OUTPUT_CSV, "w", newline="", encoding="utf-8") as file:
         writer = csv.DictWriter(file, fieldnames=COLUMNS)
         writer.writeheader()
         writer.writerows(rows)
 
-    return output_path
-
 
 def main() -> None:
+    config = load_config()
+
+    bucket = config["bucket"]
+    base_prefix = config["base_prefix"]
+    devices = config["devices"]
+    product_rules = config.get("product_rules", {})
+
     indexed_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    s3_client = boto3.client("s3")
 
     all_rows = []
 
-    for config in DEVICE_CONFIGS:
-        all_rows.extend(process_device(config, indexed_timestamp))
+    for device_config in devices:
+        all_rows.extend(
+            collect_rows_for_device(
+                s3_client=s3_client,
+                bucket=bucket,
+                base_prefix=base_prefix,
+                config=device_config,
+                product_rules=product_rules,
+                indexed_timestamp=indexed_timestamp,
+            )
+        )
 
-    output_path = write_file_index(all_rows)
+    write_csv(all_rows)
 
-    print(f"Created: {output_path}")
-    print(f"Indexed files: {len(all_rows)}")
+    print(f"Created {OUTPUT_CSV}")
+    print(f"Moved and indexed files: {len(all_rows)}")
 
 
 if __name__ == "__main__":
