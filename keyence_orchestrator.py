@@ -6,13 +6,12 @@ Local Keyence test orchestrator.
 Execution order:
     1. Start keyence-wrapper/main.py in the separate wrapper repository.
     2. Wait until the wrapper process has ended.
-    3. Run keyence_output_router.py to upload available outputs to S3.
-    4. Continue even when the wrapper returns a non-zero exit code.
+    3. Run keyence_output_router.py.
+    4. Upload available wrapper outputs to S3 by default.
+    5. Continue even when the wrapper returns a non-zero exit code.
 
-The current file_indexer.py is intentionally NOT started yet:
-it still scans toBeProcessed and moves files into processed. It must first be
-refactored to scan final Raw_Data paths and upload the resulting file_index.csv
-into toBeProcessed/file_indexer/.
+The file indexer is intentionally not started yet.
+It must first be refactored to scan Raw_Data instead of toBeProcessed.
 """
 
 from argparse import ArgumentParser
@@ -53,6 +52,7 @@ def run_wrapper(wrapper_repo: Path) -> int:
     )
 
     log(f"Wrapper finished with exit code {result.returncode}")
+
     return result.returncode
 
 
@@ -60,7 +60,7 @@ def run_router(
     wrapper_repo: Path,
     date_folder: str,
     recipe_folder: str,
-    apply: bool,
+    dry_run: bool,
 ) -> int:
     command = [
         sys.executable,
@@ -73,8 +73,8 @@ def run_router(
         recipe_folder,
     ]
 
-    if apply:
-        command.append("--apply")
+    if dry_run:
+        command.append("--dry-run")
 
     log("Starting Keyence output router")
 
@@ -85,32 +85,38 @@ def run_router(
     )
 
     log(f"Router finished with exit code {result.returncode}")
+
     return result.returncode
 
 
 def parse_args():
     parser = ArgumentParser()
+
     parser.add_argument(
         "--wrapper-repo",
         type=Path,
         default=DEFAULT_WRAPPER_REPO,
         help="Path to the local keyence-wrapper repository.",
     )
+
     parser.add_argument(
         "--date",
         required=True,
         help="Target YYYYMMDD folder below Raw_Data.",
     )
+
     parser.add_argument(
         "--recipe-folder",
         default=DEFAULT_RECIPE_FOLDER,
         help="Recipe folder used below Raw_Data and toBeProcessed.",
     )
+
     parser.add_argument(
-        "--apply",
+        "--dry-run",
         action="store_true",
-        help="Actually upload and replace S3 objects. Without this flag, routing is a dry run.",
+        help="Start wrapper but only print planned S3 routing actions.",
     )
+
     return parser.parse_args()
 
 
@@ -118,7 +124,9 @@ def main() -> None:
     args = parse_args()
 
     if not args.wrapper_repo.is_dir():
-        raise FileNotFoundError(f"Wrapper repository not found: {args.wrapper_repo}")
+        raise FileNotFoundError(
+            f"Wrapper repository not found: {args.wrapper_repo}"
+        )
 
     log("=== Keyence pipeline started ===")
 
@@ -126,7 +134,7 @@ def main() -> None:
 
     if wrapper_exit_code != 0:
         log(
-            "Wrapper reported an error. Routing still continues so that any "
+            "Wrapper reported an error. Routing still continues so that "
             "available outputs can be retained and the next run is not blocked."
         )
 
@@ -134,13 +142,20 @@ def main() -> None:
         wrapper_repo=args.wrapper_repo,
         date_folder=args.date,
         recipe_folder=args.recipe_folder,
-        apply=args.apply,
+        dry_run=args.dry_run,
     )
 
     if router_exit_code != 0:
-        log("Router reported an error. The orchestrator still exits normally after logging it.")
+        log(
+            "Router reported an error. "
+            "The orchestrator continues after logging it."
+        )
 
-    log("File indexer step is currently disabled until file_indexer.py scans Raw_Data.")
+    log(
+        "File indexer step is currently disabled "
+        "until file_indexer.py scans Raw_Data."
+    )
+
     log("=== Keyence pipeline finished ===")
 
 
