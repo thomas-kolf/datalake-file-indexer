@@ -1,16 +1,6 @@
 from __future__ import annotations
 
-"""
-Uploads locally generated Keyence wrapper outputs into the S3 Data Lake.
-
-Default behavior:
-- Upload directly to S3.
-- Replace the existing standardized recipe-folder contents in Raw_Data.
-- Keep local wrapper outputs untouched.
-
-Optional:
-- Add --dry-run to print planned actions without changing S3.
-"""
+"""Route locally generated Keyence wrapper outputs into the S3 Data Lake."""
 
 from argparse import ArgumentParser
 from pathlib import Path
@@ -27,15 +17,8 @@ DEVICE_FOLDER = "Keyence_VR5200"
 DEFAULT_WRAPPER_REPO = Path(r"C:\Users\uiv51287\keyence-wrapper")
 DEFAULT_RECIPE_FOLDER = "EMB_Gan_Prüfvorlage_zit"
 
-DATA_LAKE_READY_CANDIDATES = [
-    "data_lake_ready",
-]
-
-POWER_BI_READY_CANDIDATES = [
-    "PowerBI_ready",
-    "powerbi_ready",
-    "power_bi_ready",
-]
+DATA_LAKE_READY_FOLDER = "data_lake_ready"
+POWER_BI_READY_CANDIDATES = ["PowerBI_ready", "powerbi_ready", "power_bi_ready"]
 
 REFERENCE_OUTPUT_CANDIDATES = [
     "failed_process",
@@ -45,18 +28,11 @@ REFERENCE_OUTPUT_CANDIDATES = [
     "reports",
 ]
 
-LOG_OUTPUT_CANDIDATES = [
-    "Logs",
-    "logs",
-]
-
-
-def normalize_prefix(value: str) -> str:
-    return value.strip("/")
+LOG_OUTPUT_CANDIDATES = ["Logs", "logs"]
 
 
 def join_key(*parts: str) -> str:
-    return "/".join(normalize_prefix(part) for part in parts if part)
+    return "/".join(part.strip("/") for part in parts if part)
 
 
 def find_existing_folder(base_folder: Path, candidates: list[str]) -> Path | None:
@@ -85,26 +61,19 @@ def list_s3_keys(s3_client, bucket: str, prefix: str) -> list[str]:
     return keys
 
 
-def delete_s3_prefix(
+def delete_s3_keys(
     s3_client,
     bucket: str,
-    prefix: str,
+    keys: list[str],
     apply: bool,
 ) -> None:
-    keys = list_s3_keys(
-        s3_client=s3_client,
-        bucket=bucket,
-        prefix=prefix,
-    )
-
     if not keys:
-        print(f"No existing S3 objects to remove: s3://{bucket}/{prefix}")
         return
 
-    print(f"Existing objects below s3://{bucket}/{prefix}: {len(keys)}")
-
     if not apply:
-        print("DRY RUN: existing objects would be deleted before replacement.")
+        for key in keys:
+            print(f"DRY RUN delete stale object: s3://{bucket}/{key}")
+
         return
 
     for start in range(0, len(keys), 1000):
@@ -120,7 +89,7 @@ def delete_s3_prefix(
             },
         )
 
-    print(f"Deleted old prefix contents: s3://{bucket}/{prefix}")
+    print(f"Deleted stale S3 objects: {len(keys)}")
 
 
 def upload_file(
@@ -158,8 +127,9 @@ def upload_tree(
     source_folder: Path,
     target_prefix: str,
     apply: bool,
-) -> int:
+) -> tuple[int, set[str]]:
     uploaded = 0
+    uploaded_keys: set[str] = set()
 
     for local_file in iter_files(source_folder):
         relative_path = local_file.relative_to(source_folder).as_posix()
@@ -174,8 +144,9 @@ def upload_tree(
         )
 
         uploaded += 1
+        uploaded_keys.add(target_key)
 
-    return uploaded
+    return uploaded, uploaded_keys
 
 
 def route_data_lake_ready(
@@ -185,25 +156,16 @@ def route_data_lake_ready(
     recipe_folder: str,
     apply: bool,
 ) -> int:
-    data_lake_ready_root = find_existing_folder(
-        wrapper_repo,
-        DATA_LAKE_READY_CANDIDATES,
+    source_folder = (
+        wrapper_repo
+        / DATA_LAKE_READY_FOLDER
+        / recipe_folder
     )
-
-    if data_lake_ready_root is None:
-        print("Skipped: no local data_lake_ready folder found.")
-        return 0
-
-    # Wrapper output already contains the recipe folder:
-    # data_lake_ready/<RecipeFolder>/
-    source_folder = data_lake_ready_root / recipe_folder
 
     if not source_folder.is_dir():
         print(f"Skipped: recipe output folder not found: {source_folder}")
         return 0
 
-    # Correct final path:
-    # Raw_Data/YYYYMMDD/<RecipeFolder>/
     target_prefix = join_key(
         BASE_PREFIX,
         DEVICE_FOLDER,
@@ -212,20 +174,37 @@ def route_data_lake_ready(
         recipe_folder,
     ) + "/"
 
-    delete_s3_prefix(
-        s3_client=s3_client,
-        bucket=BUCKET,
-        prefix=target_prefix,
-        apply=apply,
-    )
-
-    return upload_tree(
+    # Safety:
+    # Upload first. Remove stale S3 objects only after all uploads succeeded.
+    uploaded_count, uploaded_keys = upload_tree(
         s3_client=s3_client,
         bucket=BUCKET,
         source_folder=source_folder,
         target_prefix=target_prefix,
         apply=apply,
     )
+
+    existing_keys = set(
+        list_s3_keys(
+            s3_client=s3_client,
+            bucket=BUCKET,
+            prefix=target_prefix,
+        )
+    )
+
+    stale_keys = sorted(existing_keys - uploaded_keys)
+
+    if stale_keys:
+        print(f"Stale recipe-folder objects to remove: {len(stale_keys)}")
+
+        delete_s3_keys(
+            s3_client=s3_client,
+            bucket=BUCKET,
+            keys=stale_keys,
+            apply=apply,
+        )
+
+    return uploaded_count
 
 
 def route_power_bi_csvs(
@@ -262,16 +241,14 @@ def route_power_bi_csvs(
         if local_file.suffix.lower() != ".csv":
             continue
 
-        target_key = join_key(
-            target_prefix,
-            local_file.name,
-        )
-
         upload_file(
             s3_client=s3_client,
             bucket=BUCKET,
             local_file=local_file,
-            target_key=target_key,
+            target_key=join_key(
+                target_prefix,
+                local_file.name,
+            ),
             apply=apply,
         )
 
@@ -294,21 +271,21 @@ def route_reference_outputs(
         if not source_folder.is_dir():
             continue
 
-        target_prefix = join_key(
-            BASE_PREFIX,
-            DEVICE_FOLDER,
-            "Raw_Data",
-            date_folder,
-            folder_name,
-        )
-
-        uploaded += upload_tree(
+        count, _ = upload_tree(
             s3_client=s3_client,
             bucket=BUCKET,
             source_folder=source_folder,
-            target_prefix=target_prefix,
+            target_prefix=join_key(
+                BASE_PREFIX,
+                DEVICE_FOLDER,
+                "Raw_Data",
+                date_folder,
+                folder_name,
+            ),
             apply=apply,
         )
+
+        uploaded += count
 
     return uploaded
 
@@ -326,19 +303,19 @@ def route_logs(
         if not source_folder.is_dir():
             continue
 
-        target_prefix = join_key(
-            BASE_PREFIX,
-            DEVICE_FOLDER,
-            "Logs",
-        )
-
-        uploaded += upload_tree(
+        count, _ = upload_tree(
             s3_client=s3_client,
             bucket=BUCKET,
             source_folder=source_folder,
-            target_prefix=target_prefix,
+            target_prefix=join_key(
+                BASE_PREFIX,
+                DEVICE_FOLDER,
+                "Logs",
+            ),
             apply=apply,
         )
+
+        uploaded += count
 
     return uploaded
 
@@ -403,7 +380,6 @@ def parse_args():
         "--wrapper-repo",
         type=Path,
         default=DEFAULT_WRAPPER_REPO,
-        help="Path to the local keyence-wrapper repository.",
     )
 
     parser.add_argument(
@@ -415,13 +391,11 @@ def parse_args():
     parser.add_argument(
         "--recipe-folder",
         default=DEFAULT_RECIPE_FOLDER,
-        help="Recipe folder used below Raw_Data and toBeProcessed.",
     )
 
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Only print planned S3 actions without uploading or deleting.",
     )
 
     return parser.parse_args()

@@ -1,18 +1,6 @@
 from __future__ import annotations
 
-"""
-Local Keyence test orchestrator.
-
-Execution order:
-    1. Start keyence-wrapper/main.py in the separate wrapper repository.
-    2. Wait until the wrapper process has ended.
-    3. Run keyence_output_router.py.
-    4. Upload available wrapper outputs to S3 by default.
-    5. Continue even when the wrapper returns a non-zero exit code.
-
-The file indexer is intentionally not started yet.
-It must first be refactored to scan Raw_Data instead of toBeProcessed.
-"""
+"""Run wrapper -> router -> Raw_Data file indexer without global pipeline stops."""
 
 from argparse import ArgumentParser
 from datetime import datetime
@@ -21,39 +9,86 @@ import subprocess
 import sys
 
 
-DEFAULT_WRAPPER_REPO = Path(r"C:\Users\uiv51287\keyence-wrapper")
+DEFAULT_WRAPPER_REPO = Path(
+    r"C:\Users\uiv51287\keyence-wrapper"
+)
+
 DEFAULT_RECIPE_FOLDER = "EMB_Gan_Prüfvorlage_zit"
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-ROUTER_SCRIPT = SCRIPT_DIR / "keyence_output_router.py"
+
+ROUTER_SCRIPT = (
+    SCRIPT_DIR
+    / "keyence_output_router.py"
+)
+
+FILE_INDEXER_SCRIPT = (
+    SCRIPT_DIR
+    / "file_indexer.py"
+)
 
 
 def timestamp() -> str:
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return datetime.now().strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
 
 
 def log(message: str) -> None:
     print(f"[{timestamp()}] {message}")
 
 
-def run_wrapper(wrapper_repo: Path) -> int:
+def run_subprocess(
+    command: list[str],
+    cwd: Path,
+    label: str,
+) -> int:
+    log(f"Starting {label}")
+
+    try:
+        result = subprocess.run(
+            command,
+            cwd=cwd,
+            check=False,
+        )
+
+        log(
+            f"{label} finished "
+            f"with exit code {result.returncode}"
+        )
+
+        return result.returncode
+
+    except Exception as error:
+        log(
+            f"{label} could not be started: "
+            f"{error}"
+        )
+
+        return 1
+
+
+def run_wrapper(
+    wrapper_repo: Path,
+) -> int:
     wrapper_main = wrapper_repo / "main.py"
 
     if not wrapper_main.is_file():
-        log(f"Wrapper main.py not found: {wrapper_main}")
+        log(
+            f"Wrapper main.py not found: "
+            f"{wrapper_main}"
+        )
+
         return 1
 
-    log(f"Starting wrapper: {wrapper_main}")
-
-    result = subprocess.run(
-        [sys.executable, str(wrapper_main)],
+    return run_subprocess(
+        command=[
+            sys.executable,
+            str(wrapper_main),
+        ],
         cwd=wrapper_repo,
-        check=False,
+        label="wrapper",
     )
-
-    log(f"Wrapper finished with exit code {result.returncode}")
-
-    return result.returncode
 
 
 def run_router(
@@ -76,17 +111,29 @@ def run_router(
     if dry_run:
         command.append("--dry-run")
 
-    log("Starting Keyence output router")
-
-    result = subprocess.run(
-        command,
+    return run_subprocess(
+        command=command,
         cwd=SCRIPT_DIR,
-        check=False,
+        label="Keyence output router",
     )
 
-    log(f"Router finished with exit code {result.returncode}")
 
-    return result.returncode
+def run_file_indexer(
+    dry_run: bool,
+) -> int:
+    command = [
+        sys.executable,
+        str(FILE_INDEXER_SCRIPT),
+    ]
+
+    if dry_run:
+        command.append("--dry-run")
+
+    return run_subprocess(
+        command=command,
+        cwd=SCRIPT_DIR,
+        label="Raw_Data file indexer",
+    )
 
 
 def parse_args():
@@ -96,7 +143,6 @@ def parse_args():
         "--wrapper-repo",
         type=Path,
         default=DEFAULT_WRAPPER_REPO,
-        help="Path to the local keyence-wrapper repository.",
     )
 
     parser.add_argument(
@@ -108,13 +154,11 @@ def parse_args():
     parser.add_argument(
         "--recipe-folder",
         default=DEFAULT_RECIPE_FOLDER,
-        help="Recipe folder used below Raw_Data and toBeProcessed.",
     )
 
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Start wrapper but only print planned S3 routing actions.",
     )
 
     return parser.parse_args()
@@ -125,36 +169,36 @@ def main() -> None:
 
     if not args.wrapper_repo.is_dir():
         raise FileNotFoundError(
-            f"Wrapper repository not found: {args.wrapper_repo}"
+            f"Wrapper repository not found: "
+            f"{args.wrapper_repo}"
         )
 
     log("=== Keyence pipeline started ===")
 
-    wrapper_exit_code = run_wrapper(args.wrapper_repo)
-
-    if wrapper_exit_code != 0:
+    if run_wrapper(args.wrapper_repo) != 0:
         log(
-            "Wrapper reported an error. Routing still continues so that "
-            "available outputs can be retained and the next run is not blocked."
+            "Wrapper reported an error. "
+            "Pipeline continues."
         )
 
-    router_exit_code = run_router(
+    if run_router(
         wrapper_repo=args.wrapper_repo,
         date_folder=args.date,
         recipe_folder=args.recipe_folder,
         dry_run=args.dry_run,
-    )
-
-    if router_exit_code != 0:
+    ) != 0:
         log(
             "Router reported an error. "
-            "The orchestrator continues after logging it."
+            "Pipeline continues."
         )
 
-    log(
-        "File indexer step is currently disabled "
-        "until file_indexer.py scans Raw_Data."
-    )
+    if run_file_indexer(
+        dry_run=args.dry_run,
+    ) != 0:
+        log(
+            "File indexer reported an error. "
+            "Pipeline continues."
+        )
 
     log("=== Keyence pipeline finished ===")
 
