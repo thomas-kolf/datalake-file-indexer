@@ -1,16 +1,62 @@
-# Data Lake / S3 location
-# bucket = S3 bucket name
-# base_prefix = root path inside the bucket
+# ============================================================
+# DATA LAKE FILE INDEXER CONFIGURATION
+# ============================================================
+
+
+# ============================================================
+# 1. DATA LAKE / S3 LOCATION
+# ============================================================
+
+# Bucket name used for the searchable S3 paths written into file_index.csv.
 bucket = "datalake-eu-central-1-vt-prod"
+
+# Root path inside the bucket.
 base_prefix = "639r-ait"
 
-# Device folders to scan.
-# Each device must have:
-# <folder>/toBeProcessed/
-# <folder>/processed/
+
+# ============================================================
+# 2. DATA LAKE RUNTIME PATHS
+# ============================================================
+
+[runtime_paths]
+
+# Root path exposed by the Jupyter Data-Lake appliance.
+# The scripts access the Data Lake like a normal filesystem.
+mount_root = "/mnt/639r-ait"
+
+# Folder containing the Keyence wrapper repository on the Data Lake.
+wrapper_repo_dir = "/mnt/639r-ait/Processing/Wrapper"
+
+# Temporary staging folder used by the Keyence wrapper.
 #
-# The folder name is used for the S3 path.
+# The wrapper writes verified standardized artifacts here first.
+# The Keyence orchestrator replaces the unstandardized Raw_Data recipe folders
+# only after the wrapper has completed successfully.
+wrapper_staging_dir = "/mnt/639r-ait/Processing/Wrapper/data_lake_ready"
+
+# Permanent Keyence Raw Data root.
+keyence_raw_data_dir = "/mnt/639r-ait/Keyence_VR5200/Raw_Data"
+
+# Keyence working input and Power-BI queue root.
+#
+# Important:
+# Keep the exact spelling consistent with the real Data-Lake folder.
+keyence_to_be_processed_dir = "/mnt/639r-ait/Keyence_VR5200/toBeProcessed"
+
+# Target path for the global Power-BI-ready searchable file index.
+file_index_output = "/mnt/639r-ait/file_indexer/toBeProcessed/file_index.csv"
+
+
+# ============================================================
+# 3. DEVICE FOLDERS TO SCAN
+# ============================================================
+
+# Each device must have:
+# <folder>/Raw_Data/
+#
+# The folder name is used for the Data-Lake path.
 # The device name is written into file_index.csv.
+
 [[devices]]
 device = "Keyence LM-X"
 folder = "Keyence_LMX"
@@ -27,12 +73,18 @@ folder = "Keyence_VR5200"
 device = "Keyence VHX"
 folder = "Keyence_VHX"
 
-# Product-specific recipe folders.
+
+# ============================================================
+# 4. PRODUCT-SPECIFIC RECIPE FOLDERS
+# ============================================================
+
 # If a file is located inside one of these folders,
-# product_area will be set to the mapped value.
+# product_area is set to the mapped value.
 #
 # Example:
-# Keyence_VR5200/toBeProcessed/EMB_Gan_Prüfvorlage_zit/...
+# Keyence_VR5200/Raw_Data/20260506/EMB_Gan_Prüfvorlage_zit/...
 # -> product_area = "EMB_Gan"
+
 [product_rules]
+
 "EMB_Gan_Prüfvorlage_zit" = "EMB_Gan"

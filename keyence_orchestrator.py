@@ -1,30 +1,43 @@
 from __future__ import annotations
 
-"""Run wrapper -> router -> Raw_Data file indexer without global pipeline stops."""
+"""
+Runs the Keyence-specific processing chain inside the Data-Lake appliance.
 
-from argparse import ArgumentParser
+Execution order:
+1. Clear the temporary standardized staging folder.
+2. Start the Keyence wrapper and wait until it has finished.
+3. Replace original unstandardized Raw_Data recipe folders only if verified
+   staged output files exist.
+4. Start the global Raw_Data file indexer.
+
+Important:
+- The wrapper itself processes:
+  /mnt/639r-ait/Keyence_VR5200/toBeProcessed/
+- The wrapper writes standardized files temporarily into:
+  /mnt/639r-ait/Processing/Wrapper/data_lake_ready/
+- The wrapper itself already routes:
+  - failed files into Raw_Data/<date>/
+  - Statistics into Raw_Data/<date>/Statistics/
+  - Power-BI CSV files into toBeProcessed/<recipe>/
+  - logs into Logs/<date>/
+"""
+
 from datetime import datetime
 from pathlib import Path
+import re
+import shutil
 import subprocess
 import sys
+import tomllib
 
-
-DEFAULT_WRAPPER_REPO = Path(
-    r"C:\Users\uiv51287\keyence-wrapper"
-)
-
-DEFAULT_RECIPE_FOLDER = "EMB_Gan_Prüfvorlage_zit"
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+CONFIG_PATH = SCRIPT_DIR / "config.toml"
 
-ROUTER_SCRIPT = (
-    SCRIPT_DIR
-    / "keyence_output_router.py"
-)
+FILE_INDEXER_SCRIPT = SCRIPT_DIR / "file_indexer.py"
 
-FILE_INDEXER_SCRIPT = (
-    SCRIPT_DIR
-    / "file_indexer.py"
+DATE_PREFIX_PATTERN = re.compile(
+    r"^(?P<date>\d{8})_"
 )
 
 
@@ -38,23 +51,54 @@ def log(message: str) -> None:
     print(f"[{timestamp()}] {message}")
 
 
-def run_subprocess(
-    command: list[str],
-    cwd: Path,
+def load_config() -> dict:
+    with CONFIG_PATH.open("rb") as file:
+        return tomllib.load(file)
+
+
+def clear_staging_folder(
+    staging_folder: Path,
+) -> None:
+    """
+    Removes staging output from earlier wrapper runs.
+
+    This affects only:
+    Processing/Wrapper/data_lake_ready/
+
+    Permanent Raw_Data files remain untouched.
+    """
+
+    if staging_folder.exists():
+        shutil.rmtree(staging_folder)
+
+    staging_folder.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    log(f"Cleared staging folder: {staging_folder}")
+
+
+def run_script(
+    script_path: Path,
+    working_directory: Path,
     label: str,
 ) -> int:
-    log(f"Starting {label}")
+    log(f"Starting {label}: {script_path}")
 
     try:
         result = subprocess.run(
-            command,
-            cwd=cwd,
+            [
+                sys.executable,
+                str(script_path),
+            ],
+            cwd=working_directory,
             check=False,
         )
 
         log(
-            f"{label} finished "
-            f"with exit code {result.returncode}"
+            f"{label} finished with "
+            f"exit code {result.returncode}"
         )
 
         return result.returncode
@@ -62,145 +106,309 @@ def run_subprocess(
     except Exception as error:
         log(
             f"{label} could not be started: "
-            f"{error}"
+            f"{type(error).__name__}: {error}"
         )
 
         return 1
 
 
-def run_wrapper(
-    wrapper_repo: Path,
+def get_date_from_file_name(
+    file_path: Path,
+) -> str | None:
+    match = DATE_PREFIX_PATTERN.match(
+        file_path.name
+    )
+
+    if match is None:
+        return None
+
+    return match.group("date")
+
+
+def collect_staged_files_by_recipe_and_date(
+    staging_folder: Path,
+) -> dict[tuple[str, str], list[Path]]:
+    """
+    Groups staged wrapper outputs by:
+    - recipe folder
+    - YYYYMMDD date parsed from standardized file name
+    """
+
+    staged_files: dict[
+        tuple[str, str],
+        list[Path],
+    ] = {}
+
+    if not staging_folder.is_dir():
+        return staged_files
+
+    for recipe_folder in staging_folder.iterdir():
+        if not recipe_folder.is_dir():
+            continue
+
+        recipe_name = recipe_folder.name
+
+        for staged_file in recipe_folder.rglob("*"):
+            if not staged_file.is_file():
+                continue
+
+            date_folder_name = get_date_from_file_name(
+                staged_file
+            )
+
+            if date_folder_name is None:
+                log(
+                    f"Skipped staged file without YYYYMMDD prefix: "
+                    f"{staged_file}"
+                )
+
+                continue
+
+            key = (
+                recipe_name,
+                date_folder_name,
+            )
+
+            staged_files.setdefault(
+                key,
+                [],
+            ).append(staged_file)
+
+    return staged_files
+
+
+def replace_raw_recipe_folder(
+    raw_data_root: Path,
+    staging_recipe_root: Path,
+    recipe_name: str,
+    date_folder_name: str,
+    staged_files: list[Path],
 ) -> int:
-    wrapper_main = wrapper_repo / "main.py"
+    """
+    Replaces only:
+    Raw_Data/<date>/<recipe_name>/
+
+    It never deletes:
+    Raw_Data/<date>/
+
+    Therefore these permanent files remain untouched:
+    - .zit files
+    - random machine files
+    - incomplete or unstandardized files
+    - Statistics folders
+    """
+
+    target_recipe_folder = (
+        raw_data_root
+        / date_folder_name
+        / recipe_name
+    )
+
+    if not staged_files:
+        log(
+            f"Skipped empty staged recipe output: "
+            f"{recipe_name} | {date_folder_name}"
+        )
+
+        return 0
+
+    if target_recipe_folder.exists():
+        shutil.rmtree(
+            target_recipe_folder
+        )
+
+        log(
+            f"Deleted old unstandardized recipe folder: "
+            f"{target_recipe_folder}"
+        )
+
+    copied_files = 0
+
+    for source_file in staged_files:
+        relative_path = source_file.relative_to(
+            staging_recipe_root
+        )
+
+        target_file = (
+            target_recipe_folder
+            / relative_path
+        )
+
+        target_file.parent.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+
+        shutil.copy2(
+            source_file,
+            target_file,
+        )
+
+        copied_files += 1
+
+    log(
+        f"Copied standardized recipe files: "
+        f"{recipe_name} | {date_folder_name} | "
+        f"files={copied_files}"
+    )
+
+    return copied_files
+
+
+def route_standardized_outputs(
+    staging_folder: Path,
+    raw_data_root: Path,
+) -> int:
+    """
+    Replaces original Raw_Data recipe folders with verified
+    standardized wrapper artifacts.
+    """
+
+    staged_files = collect_staged_files_by_recipe_and_date(
+        staging_folder=staging_folder,
+    )
+
+    if not staged_files:
+        log(
+            "No staged standardized output files found. "
+            "Raw_Data recipe folders remain untouched."
+        )
+
+        return 0
+
+    copied_files = 0
+
+    for (
+        recipe_name,
+        date_folder_name,
+    ), files in staged_files.items():
+        staging_recipe_root = (
+            staging_folder
+            / recipe_name
+        )
+
+        copied_files += replace_raw_recipe_folder(
+            raw_data_root=raw_data_root,
+            staging_recipe_root=staging_recipe_root,
+            recipe_name=recipe_name,
+            date_folder_name=date_folder_name,
+            staged_files=files,
+        )
+
+    return copied_files
+
+
+def run_keyence_pipeline() -> str:
+    """
+    Runs the complete Keyence chain.
+
+    Returns:
+    - empty string if no technical error occurred
+    - error description otherwise
+
+    The caller can log the error and continue processing other machines.
+    """
+
+    config = load_config()
+    runtime_paths = config["runtime_paths"]
+
+    wrapper_repo = Path(
+        runtime_paths["wrapper_repo_dir"]
+    )
+
+    wrapper_main = (
+        wrapper_repo
+        / "main.py"
+    )
+
+    staging_folder = Path(
+        runtime_paths["wrapper_staging_dir"]
+    )
+
+    raw_data_root = Path(
+        runtime_paths["keyence_raw_data_dir"]
+    )
 
     if not wrapper_main.is_file():
-        log(
-            f"Wrapper main.py not found: "
+        error_message = (
+            f"Keyence wrapper main.py not found: "
             f"{wrapper_main}"
         )
 
-        return 1
-
-    return run_subprocess(
-        command=[
-            sys.executable,
-            str(wrapper_main),
-        ],
-        cwd=wrapper_repo,
-        label="wrapper",
-    )
-
-
-def run_router(
-    wrapper_repo: Path,
-    date_folder: str,
-    recipe_folder: str,
-    dry_run: bool,
-) -> int:
-    command = [
-        sys.executable,
-        str(ROUTER_SCRIPT),
-        "--wrapper-repo",
-        str(wrapper_repo),
-        "--date",
-        date_folder,
-        "--recipe-folder",
-        recipe_folder,
-    ]
-
-    if dry_run:
-        command.append("--dry-run")
-
-    return run_subprocess(
-        command=command,
-        cwd=SCRIPT_DIR,
-        label="Keyence output router",
-    )
-
-
-def run_file_indexer(
-    dry_run: bool,
-) -> int:
-    command = [
-        sys.executable,
-        str(FILE_INDEXER_SCRIPT),
-    ]
-
-    if dry_run:
-        command.append("--dry-run")
-
-    return run_subprocess(
-        command=command,
-        cwd=SCRIPT_DIR,
-        label="Raw_Data file indexer",
-    )
-
-
-def parse_args():
-    parser = ArgumentParser()
-
-    parser.add_argument(
-        "--wrapper-repo",
-        type=Path,
-        default=DEFAULT_WRAPPER_REPO,
-    )
-
-    parser.add_argument(
-        "--date",
-        required=True,
-        help="Target YYYYMMDD folder below Raw_Data.",
-    )
-
-    parser.add_argument(
-        "--recipe-folder",
-        default=DEFAULT_RECIPE_FOLDER,
-    )
-
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-    )
-
-    return parser.parse_args()
-
-
-def main() -> None:
-    args = parse_args()
-
-    if not args.wrapper_repo.is_dir():
-        raise FileNotFoundError(
-            f"Wrapper repository not found: "
-            f"{args.wrapper_repo}"
-        )
+        log(error_message)
+        return error_message
 
     log("=== Keyence pipeline started ===")
 
-    if run_wrapper(args.wrapper_repo) != 0:
-        log(
-            "Wrapper reported an error. "
-            "Pipeline continues."
+    clear_staging_folder(
+        staging_folder=staging_folder,
+    )
+
+    wrapper_exit_code = run_script(
+        script_path=wrapper_main,
+        working_directory=wrapper_repo,
+        label="Keyence wrapper",
+    )
+
+    if wrapper_exit_code != 0:
+        error_message = (
+            f"Keyence wrapper failed with "
+            f"exit code {wrapper_exit_code}. "
+            f"Raw_Data recipe folders remain untouched."
         )
 
-    if run_router(
-        wrapper_repo=args.wrapper_repo,
-        date_folder=args.date,
-        recipe_folder=args.recipe_folder,
-        dry_run=args.dry_run,
-    ) != 0:
-        log(
-            "Router reported an error. "
-            "Pipeline continues."
+        log(error_message)
+
+        # The index still reflects the real permanent Raw_Data state.
+        run_script(
+            script_path=FILE_INDEXER_SCRIPT,
+            working_directory=SCRIPT_DIR,
+            label="Raw_Data file indexer",
         )
 
-    if run_file_indexer(
-        dry_run=args.dry_run,
-    ) != 0:
-        log(
-            "File indexer reported an error. "
-            "Pipeline continues."
+        log("=== Keyence pipeline finished with wrapper error ===")
+
+        return error_message
+
+    copied_files = route_standardized_outputs(
+        staging_folder=staging_folder,
+        raw_data_root=raw_data_root,
+    )
+
+    log(
+        f"Standardized artifacts routed: "
+        f"{copied_files}"
+    )
+
+    indexer_exit_code = run_script(
+        script_path=FILE_INDEXER_SCRIPT,
+        working_directory=SCRIPT_DIR,
+        label="Raw_Data file indexer",
+    )
+
+    if indexer_exit_code != 0:
+        error_message = (
+            f"Raw_Data file indexer failed with "
+            f"exit code {indexer_exit_code}"
         )
 
-    log("=== Keyence pipeline finished ===")
+        log(error_message)
+        return error_message
+
+    log("=== Keyence pipeline finished successfully ===")
+
+    return ""
+
+
+def main() -> None:
+    error_message = run_keyence_pipeline()
+
+    if error_message:
+        print(
+            f"Keyence pipeline completed with error: "
+            f"{error_message}",
+            file=sys.stderr,
+        )
 
 
 if __name__ == "__main__":
