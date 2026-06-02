@@ -1,22 +1,29 @@
 from __future__ import annotations
 
-"""Create and upload a global searchable file index from permanent Raw_Data objects."""
+"""
+Creates a global searchable file index from permanent Raw_Data files.
 
-from argparse import ArgumentParser
+The Data Lake is exposed by the Jupyter appliance as a normal filesystem:
+    /mnt/639r-ait/...
+
+The indexer:
+- scans Raw_Data folders for all configured machines
+- never moves or deletes permanent files
+- generates one global file_index.csv
+- writes the CSV directly into:
+  /mnt/639r-ait/file_indexer/toBeProcessed/file_index.csv
+"""
+
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote
 import csv
 import sys
-
-import boto3
 import tomllib
 
 
-CONFIG_PATH = "config.toml"
-OUTPUT_CSV = "file_index.csv"
-
-FILE_INDEX_TARGET_FOLDER = "file_indexer/toBeProcessed"
+SCRIPT_DIR = Path(__file__).resolve().parent
+CONFIG_PATH = SCRIPT_DIR / "config.toml"
 
 COLUMNS = [
     "file_name",
@@ -30,7 +37,7 @@ COLUMNS = [
 
 
 def load_config() -> dict:
-    with open(CONFIG_PATH, "rb") as file:
+    with CONFIG_PATH.open("rb") as file:
         return tomllib.load(file)
 
 
@@ -41,54 +48,59 @@ def build_download_link(file_path: str) -> str:
 
 
 def detect_product_area(
-    key: str,
+    relative_s3_key: str,
     product_rules: dict,
 ) -> str:
     for recipe_folder, product_area in product_rules.items():
-        if f"/{recipe_folder}/" in key:
+        if f"/{recipe_folder}/" in f"/{relative_s3_key}/":
             return product_area
 
     return "General"
 
 
-def list_s3_objects(
-    s3_client,
-    bucket: str,
-    prefix: str,
-):
-    paginator = s3_client.get_paginator("list_objects_v2")
+def build_s3_key(
+    file_path: Path,
+    mount_root: Path,
+    base_prefix: str,
+) -> str:
+    relative_path = file_path.relative_to(mount_root).as_posix()
 
-    for page in paginator.paginate(
-        Bucket=bucket,
-        Prefix=prefix,
-    ):
-        yield from page.get("Contents", [])
+    return f"{base_prefix.strip('/')}/{relative_path}"
 
 
 def create_file_row(
-    key: str,
+    file_path: Path,
+    mount_root: Path,
     bucket: str,
+    base_prefix: str,
     device: str,
-    product_area: str,
+    product_rules: dict,
     indexed_timestamp: str,
 ) -> dict:
-    file_name = Path(key).name
-    extension = Path(file_name).suffix.replace(".", "").lower()
-    file_path = f"s3://{bucket}/{key}"
+    s3_key = build_s3_key(
+        file_path=file_path,
+        mount_root=mount_root,
+        base_prefix=base_prefix,
+    )
+
+    s3_path = f"s3://{bucket}/{s3_key}"
 
     return {
-        "file_name": file_name,
-        "extension": extension,
+        "file_name": file_path.name,
+        "extension": file_path.suffix.replace(".", "").lower(),
         "indexed_timestamp": indexed_timestamp,
         "device": device,
-        "product_area": product_area,
-        "file_path": file_path,
-        "download_link": build_download_link(file_path),
+        "product_area": detect_product_area(
+            relative_s3_key=s3_key,
+            product_rules=product_rules,
+        ),
+        "file_path": s3_path,
+        "download_link": build_download_link(s3_path),
     }
 
 
 def collect_rows_for_device(
-    s3_client,
+    mount_root: Path,
     bucket: str,
     base_prefix: str,
     config: dict,
@@ -97,31 +109,28 @@ def collect_rows_for_device(
 ) -> list[dict]:
     rows = []
 
-    raw_data_prefix = (
-        f"{base_prefix.strip('/')}/"
-        f"{config['folder']}/"
-        "Raw_Data/"
+    raw_data_folder = (
+        mount_root
+        / config["folder"]
+        / "Raw_Data"
     )
 
-    for obj in list_s3_objects(
-        s3_client=s3_client,
-        bucket=bucket,
-        prefix=raw_data_prefix,
-    ):
-        key = obj["Key"]
+    if not raw_data_folder.is_dir():
+        print(f"Skipped missing Raw_Data folder: {raw_data_folder}")
+        return rows
 
-        if key.endswith("/"):
+    for file_path in raw_data_folder.rglob("*"):
+        if not file_path.is_file():
             continue
 
         rows.append(
             create_file_row(
-                key=key,
+                file_path=file_path,
+                mount_root=mount_root,
                 bucket=bucket,
+                base_prefix=base_prefix,
                 device=config["device"],
-                product_area=detect_product_area(
-                    key=key,
-                    product_rules=product_rules,
-                ),
+                product_rules=product_rules,
                 indexed_timestamp=indexed_timestamp,
             )
         )
@@ -131,8 +140,14 @@ def collect_rows_for_device(
     return rows
 
 
-def write_csv(rows: list[dict]) -> Path:
-    output_path = Path(OUTPUT_CSV)
+def write_csv(
+    rows: list[dict],
+    output_path: Path,
+) -> None:
+    output_path.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
 
     with output_path.open(
         "w",
@@ -147,49 +162,8 @@ def write_csv(rows: list[dict]) -> Path:
         writer.writeheader()
         writer.writerows(rows)
 
-    return output_path
 
-
-def upload_csv(
-    s3_client,
-    bucket: str,
-    base_prefix: str,
-    output_path: Path,
-    apply: bool,
-) -> None:
-    target_key = (
-        f"{base_prefix.strip('/')}/"
-        f"{FILE_INDEX_TARGET_FOLDER}/"
-        f"{output_path.name}"
-    )
-
-    print(
-        f"Upload index: {output_path} "
-        f"-> s3://{bucket}/{target_key}"
-    )
-
-    if apply:
-        s3_client.upload_file(
-            str(output_path),
-            bucket,
-            target_key,
-            ExtraArgs={"ContentType": "text/csv"},
-        )
-
-
-def parse_args():
-    parser = ArgumentParser()
-
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-    )
-
-    return parser.parse_args()
-
-
-def main() -> None:
-    args = parse_args()
+def run_file_indexer() -> Path:
     config = load_config()
 
     bucket = config["bucket"]
@@ -197,17 +171,26 @@ def main() -> None:
     devices = config["devices"]
     product_rules = config.get("product_rules", {})
 
+    runtime_paths = config["runtime_paths"]
+
+    mount_root = Path(
+        runtime_paths["mount_root"]
+    )
+
+    output_path = Path(
+        runtime_paths["file_index_output"]
+    )
+
     indexed_timestamp = datetime.now().strftime(
         "%Y-%m-%d %H:%M:%S"
     )
 
-    s3_client = boto3.client("s3")
     all_rows = []
 
     for device_config in devices:
         all_rows.extend(
             collect_rows_for_device(
-                s3_client=s3_client,
+                mount_root=mount_root,
                 bucket=bucket,
                 base_prefix=base_prefix,
                 config=device_config,
@@ -216,21 +199,19 @@ def main() -> None:
             )
         )
 
-    output_path = write_csv(all_rows)
-
-    upload_csv(
-        s3_client=s3_client,
-        bucket=bucket,
-        base_prefix=base_prefix,
+    write_csv(
+        rows=all_rows,
         output_path=output_path,
-        apply=not args.dry_run,
     )
 
-    mode = "DRY RUN" if args.dry_run else "APPLIED"
-
-    print(f"Created: {output_path}")
+    print(f"Created file index: {output_path}")
     print(f"Indexed files: {len(all_rows)}")
-    print(f"File index upload: {mode}")
+
+    return output_path
+
+
+def main() -> None:
+    run_file_indexer()
 
 
 if __name__ == "__main__":
@@ -238,5 +219,10 @@ if __name__ == "__main__":
         main()
 
     except Exception as error:
-        print(f"File indexer error: {error}", file=sys.stderr)
+        print(
+            f"File indexer error: "
+            f"{type(error).__name__}: {error}",
+            file=sys.stderr,
+        )
+
         raise
