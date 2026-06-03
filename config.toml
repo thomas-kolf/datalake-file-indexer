@@ -25,7 +25,7 @@
 # The final production value will be:
 # file_index_output = "V:/Powerbi_Index/file_index.csv"
 
-file_index_output = "C:/Users/uiv51287/keyence-wrapper/input/Powerbi_Index/file_index.csv"
+file_index_output = "V:/Powerbi_Index/file_index.csv"
 
 
 # ============================================================
@@ -41,7 +41,7 @@ file_index_output = "C:/Users/uiv51287/keyence-wrapper/input/Powerbi_Index/file_
 
 device = "KeyenceVR5200"
 
-scan_folder = "C:/Users/uiv51287/keyence-wrapper/input"
+scan_folder = "V:/"
 
 excluded_folders = [
     "Powerbi_Index",
