@@ -1,104 +1,70 @@
 # ============================================================
-# DATA LAKE FILE INDEXER CONFIGURATION
+# FILE INDEXER CONFIGURATION
 # ============================================================
-
-
-# ============================================================
-# 1. DATA LAKE / S3 LOCATION
-# ============================================================
-
-# Bucket name used for the searchable S3 paths written into file_index.csv.
-bucket = "datalake-eu-central-1-vt-prod"
-
-# Root path inside the bucket.
-base_prefix = "639r-ait"
-
-
-# ============================================================
-# 2. DATA LAKE RUNTIME PATHS
-# ============================================================
-
-[runtime_paths]
-
-# Root path exposed by the Jupyter Data-Lake appliance.
-# The scripts access the Data Lake like a normal filesystem.
-mount_root = "/mnt/639r-ait"
-
-# Folder containing the Keyence wrapper repository on the Data Lake.
-wrapper_repo_dir = "/mnt/639r-ait/Processing/Wrapper"
-
-# Temporary staging folder used by the Keyence wrapper.
 #
-# The wrapper writes verified standardized artifacts here first.
-# The Keyence orchestrator replaces the unstandardized Raw_Data recipe folders
-# only after the wrapper has completed successfully.
-wrapper_staging_dir = "/mnt/639r-ait/Processing/Wrapper/data_lake_ready"
-
-# Permanent Keyence Raw Data root.
-keyence_raw_data_dir = "/mnt/639r-ait/Keyence_VR5200/Raw_Data"
-
-# Keyence working input and Power-BI queue root.
+# The indexer scans finalized machine folders on the jump host.
+#
+# It creates one global file_index.csv that can later be copied
+# into the Data Lake.
 #
 # Important:
-# Keep the exact spelling consistent with the real Data-Lake folder.
-keyence_to_be_processed_dir = "/mnt/639r-ait/Keyence_VR5200/toBeProcessed"
-
-# Target path for the global Power-BI-ready searchable file index.
-file_index_output = "/mnt/639r-ait/file_indexer/toBeProcessed/file_index.csv"
-
-
-# ============================================================
-# 3. DEVICE FOLDERS TO SCAN
-# ============================================================
-
-# Each device must have:
-# <folder>/Raw_Data/
+# - The indexer never moves, copies or deletes machine files.
+# - Powerbi_Index is excluded to prevent the CSV from indexing itself.
+# - Powerbi_Details is excluded because these detail CSV files are
+#   imported separately and do not belong in the searchable file index.
 #
-# The folder name is used for the Data-Lake path.
-# The device name is written into file_index.csv.
-
-[[devices]]
-device = "Keyence LM-X"
-folder = "Keyence_LMX"
-
-[[devices]]
-device = "Olympus DSX1000"
-folder = "Olympus_DSX1000"
-
-[[devices]]
-device = "Keyence VR5200"
-folder = "Keyence_VR5200"
-
-[[devices]]
-device = "Keyence VHX"
-folder = "Keyence_VHX"
+# ============================================================
 
 
 # ============================================================
-# 4. PRODUCT-SPECIFIC RECIPE FOLDERS
+# 1. GLOBAL OUTPUT PATH
 # ============================================================
 
-# If a file is located inside one of these folders,
-# product_area is set to the mapped value.
+# Local test output path.
 #
-# Example:
-# Keyence_VR5200/Raw_Data/20260506/EMB_Gan_Prüfvorlage_zit/...
-# -> product_area = "EMB_Gan"
+# The final production value will be:
+# file_index_output = "V:/Powerbi_Index/file_index.csv"
 
-[product_rules]
-
-"EMB_Gan_Prüfvorlage_zit" = "EMB_Gan"
+file_index_output = "C:/Users/uiv51287/keyence-wrapper/input/Powerbi_Index/file_index.csv"
 
 
-# Local folder to scan recursively.
-scan_folder = "C:/Users/uiv51287/keyence-wrapper/input"
+# ============================================================
+# 2. MACHINES TO SCAN
+# ============================================================
 
-# Local output file.
-file_index_output = "C:/Users/uiv51287/keyence-wrapper/file_index.csv"
+# Local test configuration for the Keyence VR-5200.
+#
+# The final production value will be:
+# scan_folder = "V:/"
 
-# Device value written into every CSV row.
+[[devices]]
+
 device = "KeyenceVR5200"
 
-# Product-specific folder mapping.
+scan_folder = "C:/Users/uiv51287/keyence-wrapper/input"
+
+excluded_folders = [
+    "Powerbi_Index",
+    "Powerbi_Details",
+]
+
+
+# ============================================================
+# 3. PRODUCT-SPECIFIC RECIPE FOLDERS
+# ============================================================
+
+# If a file is located inside one of these recipe folders,
+# product_area is set to the configured value.
+#
+# Example:
+# EMB_Gan_Prüfvorlage_zit/
+# -> EMB_Gan
+#
+# Every file outside a configured product folder:
+# -> General
+#
+# Additional recipes can be added later without changing Python code.
+
 [product_rules]
+
 "EMB_Gan_Prüfvorlage_zit" = "EMB_Gan"
