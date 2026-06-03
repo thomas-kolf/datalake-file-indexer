@@ -88,3 +88,17 @@ folder = "Keyence_VHX"
 [product_rules]
 
 "EMB_Gan_Prüfvorlage_zit" = "EMB_Gan"
+
+
+# Local folder to scan recursively.
+scan_folder = "C:/Users/uiv51287/keyence-wrapper/input"
+
+# Local output file.
+file_index_output = "C:/Users/uiv51287/keyence-wrapper/file_index.csv"
+
+# Device value written into every CSV row.
+device = "KeyenceVR5200"
+
+# Product-specific folder mapping.
+[product_rules]
+"EMB_Gan_Prüfvorlage_zit" = "EMB_Gan"
