@@ -46,6 +46,7 @@ scan_folder = "V:/"
 excluded_folders = [
     "Powerbi_Index",
     "Powerbi_Details",
+    "Logs",
 ]
 
 
