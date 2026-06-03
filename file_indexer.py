@@ -6,17 +6,17 @@ Creates a global searchable file_index.csv from finalized machine folders.
 Current behavior:
 - scans each configured machine folder recursively
 - writes one CSV row per file
+- additionally writes folder rows only for:
+  - Statistics/
+  - Statistics/<YYYYMMDD>/
 - detects product_area from configurable recipe-folder rules
 - classifies all other files as General
 - excludes configured folders such as:
   - Powerbi_Index
   - Powerbi_Details
+  - Logs
 - never moves, copies or deletes files
 - writes one global CSV file into the configured Powerbi_Index folder
-
-The file paths currently represent the jump-host folder structure.
-The later transfer process can replace the jump-host prefix with the
-corresponding Data-Lake prefix while preserving the relative path.
 """
 
 from datetime import datetime
@@ -28,6 +28,8 @@ import tomllib
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = SCRIPT_DIR / "config.toml"
+
+STATISTICS_FOLDER_NAME = "Statistics"
 
 COLUMNS = [
     "file_name",
@@ -83,13 +85,26 @@ def detect_product_area(
     return "General"
 
 
+def is_date_folder_name(
+    folder_name: str,
+) -> bool:
+    """
+    Returns True only for YYYYMMDD folder names.
+    """
+
+    return (
+        len(folder_name) == 8
+        and folder_name.isdigit()
+    )
+
+
 def is_inside_excluded_folder(
     file_path: Path,
     scan_folder: Path,
     excluded_folders: list[str],
 ) -> bool:
     """
-    Prevents folders such as Powerbi_Index and Powerbi_Details
+    Prevents folders such as Powerbi_Index, Powerbi_Details and Logs
     from appearing in the searchable file index.
     """
 
@@ -139,6 +154,87 @@ def create_file_row(
     }
 
 
+def create_folder_row(
+    folder_path: Path,
+    device: str,
+    indexed_timestamp: str,
+) -> dict:
+    """
+    Creates a searchable and downloadable folder reference.
+
+    Folder rows are used only for:
+    - Statistics/
+    - Statistics/<YYYYMMDD>/
+    """
+
+    path_text = str(
+        folder_path
+    )
+
+    return {
+        "file_name": folder_path.name,
+        "extension": "folder",
+        "indexed_timestamp": indexed_timestamp,
+        "device": device,
+        "product_area": "General",
+        "file_path": path_text,
+        "download_link": build_download_link(
+            path_text
+        ),
+    }
+
+
+def collect_statistics_folder_rows(
+    scan_folder: Path,
+    device: str,
+    indexed_timestamp: str,
+) -> list[dict]:
+    """
+    Adds folder references only for:
+    - <scan_folder>/Statistics/
+    - <scan_folder>/Statistics/<YYYYMMDD>/
+
+    No other folders receive CSV rows.
+    """
+
+    rows = []
+
+    statistics_root = (
+        scan_folder
+        / STATISTICS_FOLDER_NAME
+    )
+
+    if not statistics_root.is_dir():
+        return rows
+
+    rows.append(
+        create_folder_row(
+            folder_path=statistics_root,
+            device=device,
+            indexed_timestamp=indexed_timestamp,
+        )
+    )
+
+    for date_folder in statistics_root.iterdir():
+        if not date_folder.is_dir():
+            continue
+
+        if not is_date_folder_name(
+            date_folder.name
+        ):
+            continue
+
+        rows.append(
+            create_folder_row(
+                folder_path=date_folder,
+                device=device,
+                indexed_timestamp=indexed_timestamp,
+            )
+        )
+
+    return rows
+
+
 def collect_rows_for_device(
     scan_folder: Path,
     device: str,
@@ -153,6 +249,14 @@ def collect_rows_for_device(
             f"Scan folder not found: "
             f"{scan_folder}"
         )
+
+    rows.extend(
+        collect_statistics_folder_rows(
+            scan_folder=scan_folder,
+            device=device,
+            indexed_timestamp=indexed_timestamp,
+        )
+    )
 
     for file_path in scan_folder.rglob("*"):
         if not file_path.is_file():
@@ -176,7 +280,7 @@ def collect_rows_for_device(
 
     print(
         f"Indexed {device}: "
-        f"{len(rows)} files"
+        f"{len(rows)} rows"
     )
 
     return rows
@@ -266,7 +370,7 @@ def main() -> None:
     )
 
     print(
-        f"Indexed files: "
+        f"Indexed rows: "
         f"{len(all_rows)}"
     )
 
