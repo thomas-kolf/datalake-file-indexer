@@ -1,18 +1,21 @@
 from __future__ import annotations
 
 """
-Transfers the finalized Keyence VR-5200 machine-drive structure to the DiD drive.
+Copies the finalized Keyence VR-5200 machine-drive content to the DiD drive.
 
-Execution order:
-1. Validate that the machine drive exists.
-2. Create the DiD target and log folders if required.
-3. Copy the complete V:/ structure to the DiD folder using Robocopy.
-4. Treat Robocopy exit codes 0-7 as successful.
-5. Delete transferred files and folders from V:/ only after a successful copy.
-6. Preserve *.zit recipe files on V:/.
-7. Write a CSV transfer log and a detailed Robocopy log.
+Process:
+1. Verify that V:/ exists.
+2. Copy all files and all non-empty folders from V:/ to the DiD target.
+3. Wait until Robocopy has finished.
+4. Accept Robocopy exit codes 0-7 as successful.
+5. Delete the transferred content from V:/ only after a successful copy.
+6. Keep root-level *.zit recipe files on V:/.
+7. Write CSV and Robocopy logs into the DiD log folder.
 
-The Data-Lake upload process is handled separately.
+Important:
+- The DiD target folder is expected to be empty before each run.
+- No staging folder is used.
+- /S copies folders containing files but skips empty folders.
 """
 
 from datetime import datetime
@@ -63,7 +66,7 @@ def append_csv_log(
     machine_on: int = 1,
 ) -> None:
     """
-    Appends one transfer event to the daily CSV log.
+    Appends one event to the daily transfer log.
     """
 
     current_date, current_time = get_timestamp()
@@ -116,10 +119,10 @@ def run_robocopy(
     robocopy_log: Path,
 ) -> int:
     """
-    Copies the complete machine-drive structure into DiD.
+    Copies all files and all non-empty folders from V:/ into DiD.
 
     Robocopy exit codes:
-    0-7  = successful or acceptable copy state
+    0-7  = successful or acceptable result
     > 7  = failure
     """
 
@@ -127,7 +130,7 @@ def run_robocopy(
         "robocopy",
         str(source_root),
         str(did_target),
-        "/E",
+        "/S",
         "/COPY:DAT",
         "/DCOPY:T",
         "/R:2",
@@ -152,14 +155,14 @@ def delete_transferred_source_content(
     csv_log_file: Path,
 ) -> bool:
     """
-    Deletes transferred source content after successful Robocopy.
+    Deletes transferred content from V:/ after successful Robocopy.
 
     Preserved:
-    - *.zit recipe files directly below V:/
+    - root-level *.zit recipe files
 
     Deleted:
     - all other root-level files
-    - all folders below V:/
+    - all root-level folders
     """
 
     cleanup_successful = True
@@ -227,7 +230,7 @@ def delete_transferred_source_content(
 
 def transfer_to_did() -> str:
     """
-    Copies finalized Keyence output into DiD and cleans V:/ afterward.
+    Copies the finalized V:/ structure to DiD and then cleans V:/.
 
     Returns:
     - empty string if transfer and cleanup succeeded
@@ -287,7 +290,8 @@ def transfer_to_did() -> str:
     if robocopy_exit_code > 7:
         error_message = (
             f"Robocopy failed with "
-            f"exit code {robocopy_exit_code}"
+            f"exit code {robocopy_exit_code}. "
+            f"Nothing was deleted from {SOURCE_ROOT}"
         )
 
         append_csv_log(
@@ -313,17 +317,15 @@ def transfer_to_did() -> str:
         f"Robocopy exit code {robocopy_exit_code}"
     )
 
-    cleanup_successful = (
-        delete_transferred_source_content(
-            source_root=SOURCE_ROOT,
-            csv_log_file=csv_log_file,
-        )
+    cleanup_successful = delete_transferred_source_content(
+        source_root=SOURCE_ROOT,
+        csv_log_file=csv_log_file,
     )
 
     if not cleanup_successful:
         error_message = (
             "DiD transfer succeeded, but one or more "
-            "source items could not be deleted from V:/"
+            "items could not be deleted from V:/"
         )
 
         append_csv_log(
