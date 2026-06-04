@@ -8,9 +8,10 @@ Execution order:
 2. Wait until the wrapper has finished.
 3. Start the file indexer.
 4. Wait until the indexer has finished.
+5. Transfer the finalized V:/ structure into DiD.
+6. Delete transferred V:/ content only after successful copy verification.
 
-The later transfer from the finalized machine drive into the Data Lake
-is handled separately and is intentionally not part of this orchestrator.
+The later upload from DiD into the Data Lake is handled separately.
 """
 
 from datetime import datetime
@@ -18,11 +19,13 @@ from pathlib import Path
 import subprocess
 import sys
 
+from transfer_to_did import transfer_to_did
+
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 
 WRAPPER_REPO = Path(
-    r"C:\Users\uiv51287\keyence-wrapper"
+    r"C:\keyence-pipeline\keyence-wrapper"
 )
 
 WRAPPER_MAIN = (
@@ -101,10 +104,10 @@ def run_script(
 def run_keyence_pipeline() -> str:
     """
     Runs:
-    wrapper -> file indexer
+    wrapper -> file indexer -> DiD transfer
 
     Returns:
-    - empty string if both scripts completed successfully
+    - empty string if all steps completed successfully
     - error description otherwise
     """
 
@@ -122,7 +125,7 @@ def run_keyence_pipeline() -> str:
         error_message = (
             f"Keyence wrapper failed with "
             f"exit code {wrapper_exit_code}. "
-            f"File indexer was not started."
+            f"File indexer and DiD transfer were not started."
         )
 
         log(
@@ -140,7 +143,8 @@ def run_keyence_pipeline() -> str:
     if indexer_exit_code != 0:
         error_message = (
             f"File indexer failed with "
-            f"exit code {indexer_exit_code}."
+            f"exit code {indexer_exit_code}. "
+            f"DiD transfer was not started."
         )
 
         log(
@@ -148,6 +152,19 @@ def run_keyence_pipeline() -> str:
         )
 
         return error_message
+
+    log(
+        "Starting DiD transfer"
+    )
+
+    transfer_error = transfer_to_did()
+
+    if transfer_error:
+        log(
+            transfer_error
+        )
+
+        return transfer_error
 
     log(
         "=== Keyence pipeline finished successfully ==="
@@ -168,6 +185,8 @@ def main() -> None:
             f"{error_message}",
             file=sys.stderr,
         )
+
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":
