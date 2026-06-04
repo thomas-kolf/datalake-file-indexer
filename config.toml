@@ -10,8 +10,8 @@
 # Important:
 # - The indexer never moves, copies or deletes machine files.
 # - Powerbi_Index is excluded to prevent the CSV from indexing itself.
-# - Powerbi_Details is excluded because these detail CSV files are
-#   imported separately and do not belong in the searchable file index.
+# - Powerbi_Details is excluded because these files are imported separately.
+# - Logs are excluded because they do not belong in the searchable file index.
 #
 # ============================================================
 
@@ -20,22 +20,12 @@
 # 1. GLOBAL OUTPUT PATH
 # ============================================================
 
-# Local test output path.
-#
-# The final production value will be:
-# file_index_output = "V:/Powerbi_Index/file_index.csv"
-
 file_index_output = "V:/Powerbi_Index/file_index.csv"
 
 
 # ============================================================
 # 2. MACHINES TO SCAN
 # ============================================================
-
-# Local test configuration for the Keyence VR-5200.
-#
-# The final production value will be:
-# scan_folder = "V:/"
 
 [[devices]]
 
@@ -53,18 +43,6 @@ excluded_folders = [
 # ============================================================
 # 3. PRODUCT-SPECIFIC RECIPE FOLDERS
 # ============================================================
-
-# If a file is located inside one of these recipe folders,
-# product_area is set to the configured value.
-#
-# Example:
-# EMB_Gan_Prüfvorlage_zit/
-# -> EMB_Gan
-#
-# Every file outside a configured product folder:
-# -> General
-#
-# Additional recipes can be added later without changing Python code.
 
 [product_rules]
 
