@@ -1,23 +1,26 @@
 from __future__ import annotations
 
 """
-Copies the finalized Keyence VR-5200 machine-drive content to the DiD drive.
+Copies finalized machine-drive content to configured DiD targets.
 
-Process:
-1. Verify that V:/ exists.
-2. Copy all files and all non-empty folders from V:/ to the DiD target.
+Process for each enabled machine:
+1. Verify that the source drive exists.
+2. Copy all files and all non-empty folders to the configured DiD target.
 3. Wait until Robocopy has finished.
 4. Accept Robocopy exit codes 0-7 as successful.
-5. Delete the transferred content from V:/ only after a successful copy.
-6. Keep root-level *.zit recipe files on V:/.
-7. Write CSV and Robocopy logs into the DiD log folder.
+5. Verify that every intended source file exists in the DiD target.
+6. Delete transferred source content only after verified transfer.
+7. Preserve configured root-level files such as *.zit recipes.
+8. Return copied and deleted artifact counters.
 
 Important:
 - The DiD target folder is expected to be empty before each run.
 - No staging folder is used.
 - /S copies folders containing files but skips empty folders.
+- Root-level preserved files are copied but excluded from copied/deleted counters.
 """
 
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 import csv
@@ -25,27 +28,16 @@ import shutil
 import subprocess
 import sys
 
+from file_indexer import get_enabled_devices, load_config
 
-SOURCE_ROOT = Path("V:/")
 
-DID_TARGET = Path(
-    r"\\vt1.vitesco.com\SMT\didv0776\DataTransfer\Keyence_VR5200_Data"
-)
-
-DID_LOG_ROOT = Path(
-    r"\\vt1.vitesco.com\SMT\DIDV0776\DataTransfer\Logs\KeyenceVR5200"
-)
-
-MACHINE_NAME = "KeyenceVR5200"
-
-PROTECTED_ROOT_FILE_SUFFIXES = {
-    ".zit",
-}
-
-EXCLUDED_COPY_FOLDERS = [
-    "System Volume Information",
-    "$RECYCLE.BIN",
-]
+@dataclass
+class TransferResult:
+    device: str
+    success: bool
+    copied_files: int
+    deleted_files: int
+    error: str = ""
 
 
 def get_timestamp() -> tuple[str, str]:
@@ -57,7 +49,7 @@ def get_timestamp() -> tuple[str, str]:
     )
 
 
-def append_csv_log(
+def append_detailed_csv_log(
     log_file: Path,
     action: str,
     item: str,
@@ -66,7 +58,7 @@ def append_csv_log(
     machine_on: int = 1,
 ) -> None:
     """
-    Appends one event to the daily transfer log.
+    Appends one event to the machine-specific daily transfer log.
     """
 
     current_date, current_time = get_timestamp()
@@ -113,13 +105,107 @@ def append_csv_log(
         )
 
 
+def is_inside_excluded_folder(
+    file_path: Path,
+    source_root: Path,
+    excluded_folders: list[str],
+) -> bool:
+    relative_path = file_path.relative_to(
+        source_root
+    )
+
+    excluded_names = {
+        folder_name.lower()
+        for folder_name in excluded_folders
+    }
+
+    return any(
+        part.lower() in excluded_names
+        for part in relative_path.parts
+    )
+
+
+def is_preserved_root_file(
+    file_path: Path,
+    source_root: Path,
+    preserve_suffixes: list[str],
+) -> bool:
+    """
+    Returns True only for preserved files directly below the source root.
+
+    Example:
+    V:/EMB_Gan_Prüfvorlage.zit
+    """
+
+    return (
+        file_path.parent == source_root
+        and file_path.suffix.lower()
+        in {
+            suffix.lower()
+            for suffix in preserve_suffixes
+        }
+    )
+
+
+def collect_transfer_files(
+    source_root: Path,
+    excluded_folders: list[str],
+) -> list[Path]:
+    """
+    Returns every source file that Robocopy is expected to transfer.
+    """
+
+    files = []
+
+    for file_path in source_root.rglob("*"):
+        if not file_path.is_file():
+            continue
+
+        if is_inside_excluded_folder(
+            file_path=file_path,
+            source_root=source_root,
+            excluded_folders=excluded_folders,
+        ):
+            continue
+
+        files.append(
+            file_path
+        )
+
+    return files
+
+
+def count_artifact_files(
+    files: list[Path],
+    source_root: Path,
+    preserve_suffixes: list[str],
+) -> int:
+    """
+    Counts transferable artifacts.
+
+    Preserved root-level recipe files are intentionally excluded
+    from the copied/deleted counters.
+    """
+
+    return sum(
+        1
+        for file_path in files
+        if not is_preserved_root_file(
+            file_path=file_path,
+            source_root=source_root,
+            preserve_suffixes=preserve_suffixes,
+        )
+    )
+
+
 def run_robocopy(
     source_root: Path,
     did_target: Path,
     robocopy_log: Path,
+    excluded_folders: list[str],
 ) -> int:
     """
-    Copies all files and all non-empty folders from V:/ into DiD.
+    Copies all files and all non-empty folders into DiD.
 
     Robocopy exit codes:
     0-7  = successful or acceptable result
@@ -136,11 +222,22 @@ def run_robocopy(
         "/R:2",
         "/W:2",
         "/XJ",
-        "/XD",
-        *EXCLUDED_COPY_FOLDERS,
-        f"/LOG+:{robocopy_log}",
-        "/TEE",
     ]
+
+    if excluded_folders:
+        command.extend(
+            [
+                "/XD",
+                *excluded_folders,
+            ]
+        )
+
+    command.extend(
+        [
+            f"/LOG+:{robocopy_log}",
+            "/TEE",
+        ]
+    )
 
     result = subprocess.run(
         command,
@@ -150,44 +247,114 @@ def run_robocopy(
     return result.returncode
 
 
+def verify_transferred_files(
+    source_files: list[Path],
+    source_root: Path,
+    did_target: Path,
+) -> list[Path]:
+    """
+    Returns files that are missing from the DiD target after Robocopy.
+    """
+
+    missing_files = []
+
+    for source_file in source_files:
+        relative_path = source_file.relative_to(
+            source_root
+        )
+
+        target_file = (
+            did_target
+            / relative_path
+        )
+
+        if not target_file.is_file():
+            missing_files.append(
+                target_file
+            )
+
+    return missing_files
+
+
+def count_files_in_folder(
+    folder: Path,
+) -> int:
+    return sum(
+        1
+        for path in folder.rglob("*")
+        if path.is_file()
+    )
+
+
 def delete_transferred_source_content(
     source_root: Path,
-    csv_log_file: Path,
-) -> bool:
+    detailed_csv_log_file: Path,
+    preserve_suffixes: list[str],
+    excluded_folders: list[str],
+) -> tuple[bool, int]:
     """
-    Deletes transferred content from V:/ after successful Robocopy.
+    Deletes transferred content after successful copy verification.
 
     Preserved:
-    - root-level *.zit recipe files
+    - configured root-level files such as *.zit recipes
+    - configured excluded folders
 
     Deleted:
     - all other root-level files
-    - all root-level folders
+    - all other root-level folders
+
+    Returns:
+    - cleanup success
+    - number of deleted artifact files
     """
 
     cleanup_successful = True
+    deleted_files = 0
+
+    excluded_names = {
+        folder_name.lower()
+        for folder_name in excluded_folders
+    }
 
     for root_item in source_root.iterdir():
         try:
+            if (
+                root_item.is_dir()
+                and root_item.name.lower()
+                in excluded_names
+            ):
+                append_detailed_csv_log(
+                    log_file=detailed_csv_log_file,
+                    action="KEEP_FOLDER",
+                    item=root_item.name,
+                    result="OK",
+                    error="EXCLUDED_FOLDER_KEPT",
+                )
+
+                continue
+
             if root_item.is_file():
-                if (
-                    root_item.suffix.lower()
-                    in PROTECTED_ROOT_FILE_SUFFIXES
+                if is_preserved_root_file(
+                    file_path=root_item,
+                    source_root=source_root,
+                    preserve_suffixes=preserve_suffixes,
                 ):
-                    append_csv_log(
-                        log_file=csv_log_file,
+                    append_detailed_csv_log(
+                        log_file=detailed_csv_log_file,
                         action="KEEP_FILE",
                         item=root_item.name,
                         result="OK",
-                        error="RECIPE_FILE_KEPT",
+                        error="PRESERVED_ROOT_FILE",
                     )
 
                     continue
 
                 root_item.unlink()
 
-                append_csv_log(
-                    log_file=csv_log_file,
+                deleted_files += 1
+
+                append_detailed_csv_log(
+                    log_file=detailed_csv_log_file,
                     action="DELETE_FILE",
                     item=root_item.name,
                     result="OK",
@@ -196,22 +363,32 @@ def delete_transferred_source_content(
                 continue
 
             if root_item.is_dir():
+                folder_file_count = count_files_in_folder(
+                    root_item
+                )
+
                 shutil.rmtree(
                     root_item
                 )
 
-                append_csv_log(
-                    log_file=csv_log_file,
+                deleted_files += folder_file_count
+
+                append_detailed_csv_log(
+                    log_file=detailed_csv_log_file,
                     action="DELETE_FOLDER",
                     item=root_item.name,
                     result="OK",
+                    error=(
+                        f"DELETED_FILES_"
+                        f"{folder_file_count}"
+                    ),
                 )
 
         except Exception as error:
             cleanup_successful = False
 
-            append_csv_log(
-                log_file=csv_log_file,
+            append_detailed_csv_log(
+                log_file=detailed_csv_log_file,
                 action=(
                     "DELETE_FOLDER"
                     if root_item.is_dir()
@@ -225,141 +402,279 @@ def delete_transferred_source_content(
                 ),
             )
 
-    return cleanup_successful
+    return (
+        cleanup_successful,
+        deleted_files,
+    )
 
 
-def transfer_to_did() -> str:
+def transfer_device_to_did(
+    device_config: dict,
+    detailed_log_root: Path,
+) -> TransferResult:
     """
-    Copies the finalized V:/ structure to DiD and then cleans V:/.
-
-    Returns:
-    - empty string if transfer and cleanup succeeded
-    - error description otherwise
+    Transfers one machine folder into its configured DiD target.
     """
+
+    device = device_config["device"]
+
+    source_root = Path(
+        device_config["scan_folder"]
+    )
+
+    did_target = Path(
+        device_config["did_target"]
+    )
+
+    preserve_suffixes = device_config.get(
+        "preserve_root_file_suffixes",
+        [],
+    )
+
+    excluded_folders = device_config.get(
+        "excluded_copy_folders",
+        [],
+    )
 
     current_date, _ = get_timestamp()
 
-    csv_log_file = (
-        DID_LOG_ROOT
-        / f"{MACHINE_NAME}_{current_date}.csv"
+    detailed_machine_log_root = (
+        detailed_log_root
+        / device
+    )
+
+    detailed_csv_log_file = (
+        detailed_machine_log_root
+        / f"{device}_{current_date}.csv"
     )
 
     robocopy_log_file = (
-        DID_LOG_ROOT
-        / f"Robocopy_{MACHINE_NAME}_{current_date}.txt"
+        detailed_machine_log_root
+        / f"Robocopy_{device}_{current_date}.txt"
     )
 
-    DID_LOG_ROOT.mkdir(
+    detailed_machine_log_root.mkdir(
         parents=True,
         exist_ok=True,
     )
 
-    if not SOURCE_ROOT.is_dir():
+    if not source_root.is_dir():
         error_message = (
             f"Source drive not found: "
-            f"{SOURCE_ROOT}"
+            f"{source_root}"
         )
 
-        append_csv_log(
-            log_file=csv_log_file,
+        append_detailed_csv_log(
+            log_file=detailed_csv_log_file,
             action="SRC_CHECK",
-            item=str(SOURCE_ROOT),
+            item=str(source_root),
             result="FAILED",
             error="SRC_NOT_FOUND",
             machine_on=0,
         )
 
-        return error_message
+        return TransferResult(
+            device=device,
+            success=False,
+            copied_files=0,
+            deleted_files=0,
+            error=error_message,
+        )
 
-    DID_TARGET.mkdir(
+    did_target.mkdir(
         parents=True,
         exist_ok=True,
     )
 
+    source_files = collect_transfer_files(
+        source_root=source_root,
+        excluded_folders=excluded_folders,
+    )
+
+    expected_artifact_count = count_artifact_files(
+        files=source_files,
+        source_root=source_root,
+        preserve_suffixes=preserve_suffixes,
+    )
+
     print(
-        f"Starting DiD transfer: "
-        f"{SOURCE_ROOT} -> {DID_TARGET}"
+        f"Starting DiD transfer for "
+        f"{device}: "
+        f"{source_root} -> {did_target}"
     )
 
     robocopy_exit_code = run_robocopy(
-        source_root=SOURCE_ROOT,
-        did_target=DID_TARGET,
+        source_root=source_root,
+        did_target=did_target,
         robocopy_log=robocopy_log_file,
+        excluded_folders=excluded_folders,
     )
 
     if robocopy_exit_code > 7:
         error_message = (
             f"Robocopy failed with "
             f"exit code {robocopy_exit_code}. "
-            f"Nothing was deleted from {SOURCE_ROOT}"
+            f"Nothing was deleted from "
+            f"{source_root}"
         )
 
-        append_csv_log(
-            log_file=csv_log_file,
+        append_detailed_csv_log(
+            log_file=detailed_csv_log_file,
             action="COPY",
-            item=str(SOURCE_ROOT),
+            item=str(source_root),
             result="FAILED",
-            error=f"ROBOCOPY_EXIT_{robocopy_exit_code}",
+            error=(
+                f"ROBOCOPY_EXIT_"
+                f"{robocopy_exit_code}"
+            ),
         )
 
-        return error_message
+        return TransferResult(
+            device=device,
+            success=False,
+            copied_files=0,
+            deleted_files=0,
+            error=error_message,
+        )
 
-    append_csv_log(
-        log_file=csv_log_file,
+    missing_target_files = verify_transferred_files(
+        source_files=source_files,
+        source_root=source_root,
+        did_target=did_target,
+    )
+
+    if missing_target_files:
+        error_message = (
+            f"Transfer verification failed. "
+            f"Missing target files: "
+            f"{len(missing_target_files)}. "
+            f"Nothing was deleted from "
+            f"{source_root}"
+        )
+
+        append_detailed_csv_log(
+            log_file=detailed_csv_log_file,
+            action="VERIFY_COPY",
+            item=str(source_root),
+            result="FAILED",
+            error=(
+                f"MISSING_TARGET_FILES_"
+                f"{len(missing_target_files)}"
+            ),
+        )
+
+        return TransferResult(
+            device=device,
+            success=False,
+            copied_files=0,
+            deleted_files=0,
+            error=error_message,
+        )
+
+    append_detailed_csv_log(
+        log_file=detailed_csv_log_file,
         action="COPY",
-        item=str(SOURCE_ROOT),
+        item=str(source_root),
         result="OK",
-        error=f"ROBOCOPY_EXIT_{robocopy_exit_code}",
+        error=(
+            f"ROBOCOPY_EXIT_"
+            f"{robocopy_exit_code}"
+        ),
     )
 
     print(
-        f"DiD transfer completed with "
-        f"Robocopy exit code {robocopy_exit_code}"
+        f"Verified transferred artifacts for "
+        f"{device}: "
+        f"{expected_artifact_count}"
     )
 
-    cleanup_successful = delete_transferred_source_content(
-        source_root=SOURCE_ROOT,
-        csv_log_file=csv_log_file,
+    (
+        cleanup_successful,
+        deleted_files,
+    ) = delete_transferred_source_content(
+        source_root=source_root,
+        detailed_csv_log_file=detailed_csv_log_file,
+        preserve_suffixes=preserve_suffixes,
+        excluded_folders=excluded_folders,
     )
 
     if not cleanup_successful:
         error_message = (
-            "DiD transfer succeeded, but one or more "
-            "items could not be deleted from V:/"
+            f"Transfer succeeded for "
+            f"{device}, but one or more "
+            f"source items could not be deleted."
         )
 
-        append_csv_log(
-            log_file=csv_log_file,
+        append_detailed_csv_log(
+            log_file=detailed_csv_log_file,
             action="FINISHED",
-            item=MACHINE_NAME,
+            item=device,
             result="FAILED",
             error="SOURCE_CLEANUP_INCOMPLETE",
         )
 
-        return error_message
+        return TransferResult(
+            device=device,
+            success=False,
+            copied_files=expected_artifact_count,
+            deleted_files=deleted_files,
+            error=error_message,
+        )
 
-    append_csv_log(
-        log_file=csv_log_file,
+    append_detailed_csv_log(
+        log_file=detailed_csv_log_file,
         action="FINISHED",
-        item=MACHINE_NAME,
+        item=device,
         result="OK",
     )
 
     print(
-        "DiD transfer and source cleanup "
-        "finished successfully"
+        f"DiD transfer and source cleanup "
+        f"finished successfully for "
+        f"{device}"
     )
 
-    return ""
+    return TransferResult(
+        device=device,
+        success=True,
+        copied_files=expected_artifact_count,
+        deleted_files=deleted_files,
+    )
 
 
 def main() -> None:
-    error_message = transfer_to_did()
+    """
+    Standalone mode:
+    transfers every enabled machine independently.
+    """
 
-    if error_message:
+    config = load_config()
+
+    detailed_log_root = Path(
+        config["transfer"][
+            "detailed_log_root"
+        ]
+    )
+
+    failed_devices = []
+
+    for device_config in get_enabled_devices(
+        config
+    ):
+        result = transfer_device_to_did(
+            device_config=device_config,
+            detailed_log_root=detailed_log_root,
+        )
+
+        if not result.success:
+            failed_devices.append(
+                result.device
+            )
+
+    if failed_devices:
         print(
-            f"DiD transfer completed with error: "
-            f"{error_message}",
+            f"Transfer failed for: "
+            f"{', '.join(failed_devices)}",
             file=sys.stderr,
         )
 

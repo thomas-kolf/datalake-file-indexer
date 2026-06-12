@@ -1,48 +1,217 @@
 # ============================================================
-# FILE INDEXER CONFIGURATION
+# FILE INDEXER AND TRANSFER CONFIGURATION
 # ============================================================
 #
-# The indexer scans finalized machine folders on the jump host.
-#
-# It creates one global file_index.csv that can later be copied
-# into the Data Lake.
-#
-# Important:
-# - The indexer never moves, copies or deletes machine files.
-# - Powerbi_Index is excluded to prevent the CSV from indexing itself.
-# - Powerbi_Details is excluded because these files are imported separately.
-# - Logs are excluded because they do not belong in the searchable file index.
+# The pipeline:
+# - scans configured machine folders on the jump host
+# - creates one file_index.csv per enabled machine
+# - transfers the complete machine-folder content into DiD
+# - deletes transferred source content only after verified transfer
+# - writes one daily machine-status CSV
 #
 # ============================================================
 
 
 # ============================================================
-# 1. GLOBAL OUTPUT PATH
+# 1. DAILY MACHINE STATUS CSV
 # ============================================================
 
-file_index_output = "V:/Powerbi_Index/file_index.csv"
+[status]
+
+# Daily summary CSV output folder.
+#
+# Result example:
+# \\vt1.vitesco.com\SMT\didv0776\DataTransfer\Logs\AllMachines\
+# └── Keyence_2026_06_12.csv
+
+output_folder = '\\vt1.vitesco.com\SMT\didv0776\DataTransfer\Logs\AllMachines'
+
+file_prefix = "Keyence"
 
 
 # ============================================================
-# 2. MACHINES TO SCAN
+# 2. DETAILED TRANSFER LOGS
 # ============================================================
+
+[transfer]
+
+# Detailed per-machine CSV and Robocopy logs are written below:
+#
+# \\vt1.vitesco.com\SMT\didv0776\DataTransfer\Logs\
+# ├── KeyenceVR5200\
+# └── KeyenceVHX\
+
+detailed_log_root = '\\vt1.vitesco.com\SMT\didv0776\DataTransfer\Logs'
+
+
+# ============================================================
+# 3. MACHINES
+# ============================================================
+
+# ------------------------------------------------------------
+# Keyence VR-5200
+# ------------------------------------------------------------
 
 [[devices]]
 
 device = "KeyenceVR5200"
 
+enabled = true
+
+# This machine requires the Keyence wrapper before indexing.
+run_wrapper = true
+
 scan_folder = "V:/"
 
-excluded_folders = [
+did_target = '\\vt1.vitesco.com\SMT\didv0776\DataTransfer\Keyence_VR5200_Data'
+
+# Generated index:
+# V:/Powerbi_Index/file_index.csv
+index_output_folder = "Powerbi_Index"
+index_output_file = "file_index.csv"
+
+# Root-level recipe files remain permanently on the source drive.
+preserve_root_file_suffixes = [
+    ".zit",
+]
+
+# Excluded from the searchable index.
+excluded_index_folders = [
     "Powerbi_Index",
     "Powerbi_Details",
     "Logs",
 ]
 
+# Excluded from Robocopy and cleanup.
+excluded_copy_folders = [
+    "System Volume Information",
+    "$RECYCLE.BIN",
+]
+
+# Create downloadable folder references for:
+# Statistics/
+# Statistics/<YYYYMMDD>/
+include_statistics_folder_rows = true
+
+
+# ------------------------------------------------------------
+# Keyence VHX
+# ------------------------------------------------------------
+
+[[devices]]
+
+device = "KeyenceVHX"
+
+enabled = true
+
+run_wrapper = false
+
+scan_folder = "U:/"
+
+did_target = '\\vt1.vitesco.com\SMT\didv0776\DataTransfer\Keyence_VHX_Data'
+
+index_output_folder = "Powerbi_Index"
+index_output_file = "file_index.csv"
+
+preserve_root_file_suffixes = []
+
+excluded_index_folders = [
+    "Powerbi_Index",
+    "Powerbi_Details",
+    "Logs",
+]
+
+excluded_copy_folders = [
+    "System Volume Information",
+    "$RECYCLE.BIN",
+]
+
+include_statistics_folder_rows = false
+
+
+# ------------------------------------------------------------
+# Keyence LM-X
+# Source drive is not known yet.
+# Enable after scan_folder is configured.
+# ------------------------------------------------------------
+
+[[devices]]
+
+device = "KeyenceLMX"
+
+enabled = false
+
+run_wrapper = false
+
+scan_folder = ""
+
+did_target = '\\vt1.vitesco.com\SMT\didv0776\DataTransfer\Keyence_LMX_Data'
+
+index_output_folder = "Powerbi_Index"
+index_output_file = "file_index.csv"
+
+preserve_root_file_suffixes = []
+
+excluded_index_folders = [
+    "Powerbi_Index",
+    "Powerbi_Details",
+    "Logs",
+]
+
+excluded_copy_folders = [
+    "System Volume Information",
+    "$RECYCLE.BIN",
+]
+
+include_statistics_folder_rows = false
+
+
+# ------------------------------------------------------------
+# Olympus DSX
+# Source drive is not known yet.
+# Enable after scan_folder is configured.
+# ------------------------------------------------------------
+
+[[devices]]
+
+device = "OlympusDSX"
+
+enabled = false
+
+run_wrapper = false
+
+scan_folder = ""
+
+did_target = '\\vt1.vitesco.com\SMT\didv0776\DataTransfer\Olympus_DSX_Data'
+
+index_output_folder = "Powerbi_Index"
+index_output_file = "file_index.csv"
+
+preserve_root_file_suffixes = []
+
+excluded_index_folders = [
+    "Powerbi_Index",
+    "Powerbi_Details",
+    "Logs",
+]
+
+excluded_copy_folders = [
+    "System Volume Information",
+    "$RECYCLE.BIN",
+]
+
+include_statistics_folder_rows = false
+
 
 # ============================================================
-# 3. PRODUCT-SPECIFIC RECIPE FOLDERS
+# 4. PRODUCT-SPECIFIC RECIPE FOLDERS
 # ============================================================
+
+# Files located inside configured recipe folders receive the
+# mapped product_area value.
+#
+# Everything else:
+# product_area = "General"
 
 [product_rules]
 

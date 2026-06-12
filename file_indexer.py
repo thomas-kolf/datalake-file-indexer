@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 """
-Creates a global searchable file_index.csv from finalized machine folders.
+Creates one searchable file_index.csv per configured machine.
 
-Current behavior:
-- scans each configured machine folder recursively
+Behavior:
+- scans each enabled machine folder recursively
 - writes one CSV row per file
-- additionally writes folder rows only for:
+- optionally adds folder rows for:
   - Statistics/
   - Statistics/<YYYYMMDD>/
 - detects product_area from configurable recipe-folder rules
@@ -15,14 +15,17 @@ Current behavior:
   - Powerbi_Index
   - Powerbi_Details
   - Logs
-- never moves, copies or deletes files
-- writes one global CSV file into the configured Powerbi_Index folder
+- never moves, copies or deletes machine files
+- continues processing other machines if one machine is unavailable
 """
 
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote
 import csv
+import shutil
+import sys
 import tomllib
 
 
@@ -40,6 +43,16 @@ COLUMNS = [
     "file_path",
     "download_link",
 ]
+
+
+@dataclass
+class IndexResult:
+    device: str
+    success: bool
+    output_path: Path | None
+    indexed_rows: int
+    free_memory: int | None
+    error: str = ""
 
 
 def load_config() -> dict:
@@ -66,7 +79,7 @@ def detect_product_area(
     product_rules: dict,
 ) -> str:
     """
-    Detects whether a file belongs to a configured product-specific folder.
+    Detects whether a file belongs to a configured product folder.
 
     Example:
     EMB_Gan_Prüfvorlage_zit/
@@ -104,8 +117,7 @@ def is_inside_excluded_folder(
     excluded_folders: list[str],
 ) -> bool:
     """
-    Prevents folders such as Powerbi_Index, Powerbi_Details and Logs
-    from appearing in the searchable file index.
+    Prevents excluded folders from appearing in the searchable index.
     """
 
     relative_path = file_path.relative_to(
@@ -162,7 +174,7 @@ def create_folder_row(
     """
     Creates a searchable and downloadable folder reference.
 
-    Folder rows are used only for:
+    Used only for:
     - Statistics/
     - Statistics/<YYYYMMDD>/
     """
@@ -193,8 +205,6 @@ def collect_statistics_folder_rows(
     Adds folder references only for:
     - <scan_folder>/Statistics/
     - <scan_folder>/Statistics/<YYYYMMDD>/
-
-    No other folders receive CSV rows.
     """
 
     rows = []
@@ -240,6 +250,7 @@ def collect_rows_for_device(
     device: str,
     product_rules: dict,
     excluded_folders: list[str],
+    include_statistics_folder_rows: bool,
     indexed_timestamp: str,
 ) -> list[dict]:
     rows = []
@@ -250,13 +261,14 @@ def collect_rows_for_device(
             f"{scan_folder}"
         )
 
-    rows.extend(
-        collect_statistics_folder_rows(
-            scan_folder=scan_folder,
-            device=device,
-            indexed_timestamp=indexed_timestamp,
+    if include_statistics_folder_rows:
+        rows.extend(
+            collect_statistics_folder_rows(
+                scan_folder=scan_folder,
+                device=device,
+                indexed_timestamp=indexed_timestamp,
+            )
         )
-    )
 
     for file_path in scan_folder.rglob("*"):
         if not file_path.is_file():
@@ -278,11 +290,6 @@ def collect_rows_for_device(
             )
         )
 
-    print(
-        f"Indexed {device}: "
-        f"{len(rows)} rows"
-    )
-
     return rows
 
 
@@ -290,12 +297,24 @@ def write_csv(
     rows: list[dict],
     output_path: Path,
 ) -> None:
+    """
+    Writes the generated CSV atomically.
+
+    The old file_index.csv is replaced only after the new temporary
+    CSV was written successfully.
+    """
+
     output_path.parent.mkdir(
         parents=True,
         exist_ok=True,
     )
 
-    with output_path.open(
+    temporary_output_path = (
+        output_path
+        .with_suffix(".tmp")
+    )
+
+    with temporary_output_path.open(
         "w",
         newline="",
         encoding="utf-8",
@@ -310,69 +329,198 @@ def write_csv(
             rows
         )
 
+    temporary_output_path.replace(
+        output_path
+    )
+
+
+def get_free_memory(
+    machine_root: Path,
+) -> int | None:
+    """
+    Returns free bytes on the drive containing the machine folder.
+    """
+
+    try:
+        return shutil.disk_usage(
+            machine_root
+        ).free
+
+    except Exception:
+        return None
+
+
+def create_file_index_for_device(
+    device_config: dict,
+    product_rules: dict,
+) -> IndexResult:
+    """
+    Creates one machine-specific file_index.csv.
+
+    MachineOn logic:
+    - success=True  -> machine folder reachable and index written
+    - success=False -> machine folder unavailable or indexing failed
+    """
+
+    device = device_config["device"]
+
+    scan_folder = Path(
+        device_config["scan_folder"]
+    )
+
+    output_path = (
+        scan_folder
+        / device_config.get(
+            "index_output_folder",
+            "Powerbi_Index",
+        )
+        / device_config.get(
+            "index_output_file",
+            "file_index.csv",
+        )
+    )
+
+    indexed_timestamp = datetime.now().strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
+
+    if not scan_folder.is_dir():
+        error_message = (
+            f"Scan folder not found: "
+            f"{scan_folder}"
+        )
+
+        print(
+            f"{device}: "
+            f"{error_message}"
+        )
+
+        return IndexResult(
+            device=device,
+            success=False,
+            output_path=None,
+            indexed_rows=0,
+            free_memory=None,
+            error=error_message,
+        )
+
+    free_memory = get_free_memory(
+        scan_folder
+    )
+
+    try:
+        rows = collect_rows_for_device(
+            scan_folder=scan_folder,
+            device=device,
+            product_rules=product_rules,
+            excluded_folders=device_config.get(
+                "excluded_index_folders",
+                [],
+            ),
+            include_statistics_folder_rows=device_config.get(
+                "include_statistics_folder_rows",
+                False,
+            ),
+            indexed_timestamp=indexed_timestamp,
+        )
+
+        write_csv(
+            rows=rows,
+            output_path=output_path,
+        )
+
+        print(
+            f"Created file index for "
+            f"{device}: "
+            f"{output_path}"
+        )
+
+        print(
+            f"Indexed rows for "
+            f"{device}: "
+            f"{len(rows)}"
+        )
+
+        return IndexResult(
+            device=device,
+            success=True,
+            output_path=output_path,
+            indexed_rows=len(rows),
+            free_memory=free_memory,
+        )
+
+    except Exception as error:
+        error_message = (
+            f"{type(error).__name__}: "
+            f"{error}"
+        )
+
+        print(
+            f"File indexer error for "
+            f"{device}: "
+            f"{error_message}",
+            file=sys.stderr,
+        )
+
+        return IndexResult(
+            device=device,
+            success=False,
+            output_path=None,
+            indexed_rows=0,
+            free_memory=free_memory,
+            error=error_message,
+        )
+
+
+def get_enabled_devices(
+    config: dict,
+) -> list[dict]:
+    return [
+        device_config
+        for device_config in config["devices"]
+        if device_config.get(
+            "enabled",
+            False,
+        )
+    ]
+
 
 def main() -> None:
-    config = load_config()
+    """
+    Standalone mode:
+    creates an index for every enabled machine.
+    """
 
-    output_path = Path(
-        config["file_index_output"]
-    )
+    config = load_config()
 
     product_rules = config.get(
         "product_rules",
         {},
     )
 
-    devices = config[
-        "devices"
-    ]
+    failed_devices = []
 
-    indexed_timestamp = datetime.now().strftime(
-        "%Y-%m-%d %H:%M:%S"
-    )
-
-    all_rows = []
-
-    for device_config in devices:
-        scan_folder = Path(
-            device_config[
-                "scan_folder"
-            ]
+    for device_config in get_enabled_devices(
+        config
+    ):
+        result = create_file_index_for_device(
+            device_config=device_config,
+            product_rules=product_rules,
         )
 
-        device = device_config[
-            "device"
-        ]
-
-        excluded_folders = device_config.get(
-            "excluded_folders",
-            [],
-        )
-
-        all_rows.extend(
-            collect_rows_for_device(
-                scan_folder=scan_folder,
-                device=device,
-                product_rules=product_rules,
-                excluded_folders=excluded_folders,
-                indexed_timestamp=indexed_timestamp,
+        if not result.success:
+            failed_devices.append(
+                result.device
             )
+
+    if failed_devices:
+        print(
+            f"Indexing failed for: "
+            f"{', '.join(failed_devices)}",
+            file=sys.stderr,
         )
 
-    write_csv(
-        rows=all_rows,
-        output_path=output_path,
-    )
-
-    print(
-        f"Created file index: "
-        f"{output_path}"
-    )
-
-    print(
-        f"Indexed rows: "
-        f"{len(all_rows)}"
-    )
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":
