@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 """
-Creates one searchable file_index.csv per configured machine.
+Creates one searchable file_index_YYYYMMDD.csv per configured machine.
 
 Behavior:
 - scans each enabled machine folder recursively
@@ -71,6 +71,45 @@ def build_download_link(
     return (
         f"datalakedownloader://download?"
         f"path={encoded_path}"
+    )
+
+
+def get_index_timestamp() -> str:
+    """
+    Timestamp format written into the CSV:
+    DD.MM.YYYY HH:MM:SS
+    """
+
+    return datetime.now().strftime(
+        "%d.%m.%Y %H:%M:%S"
+    )
+
+
+def get_index_file_date() -> str:
+    """
+    Date suffix for the output filename:
+    YYYYMMDD
+    """
+
+    return datetime.now().strftime(
+        "%Y%m%d"
+    )
+
+
+def build_dated_output_path(
+    output_path: Path,
+) -> Path:
+    """
+    Converts:
+    file_index.csv
+    ->
+    file_index_YYYYMMDD.csv
+    """
+
+    date_suffix = get_index_file_date()
+
+    return output_path.with_name(
+        f"{output_path.stem}_{date_suffix}{output_path.suffix}"
     )
 
 
@@ -300,7 +339,7 @@ def write_csv(
     """
     Writes the generated CSV atomically.
 
-    The old file_index.csv is replaced only after the new temporary
+    The old dated CSV is replaced only after the new temporary
     CSV was written successfully.
     """
 
@@ -322,6 +361,7 @@ def write_csv(
         writer = csv.DictWriter(
             file,
             fieldnames=COLUMNS,
+            delimiter=",",
         )
 
         writer.writeheader()
@@ -355,7 +395,7 @@ def create_file_index_for_device(
     product_rules: dict,
 ) -> IndexResult:
     """
-    Creates one machine-specific file_index.csv.
+    Creates one machine-specific file_index_YYYYMMDD.csv.
 
     MachineOn logic:
     - success=True  -> machine folder reachable and index written
@@ -368,7 +408,7 @@ def create_file_index_for_device(
         device_config["scan_folder"]
     )
 
-    output_path = (
+    base_output_path = (
         scan_folder
         / device_config.get(
             "index_output_folder",
@@ -380,9 +420,11 @@ def create_file_index_for_device(
         )
     )
 
-    indexed_timestamp = datetime.now().strftime(
-        "%Y-%m-%d %H:%M:%S"
+    output_path = build_dated_output_path(
+        base_output_path
     )
+
+    indexed_timestamp = get_index_timestamp()
 
     if not scan_folder.is_dir():
         error_message = (
