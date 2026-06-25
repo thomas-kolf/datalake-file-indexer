@@ -131,58 +131,19 @@ include_statistics_folder_rows = false
 
 # ------------------------------------------------------------
 # Keyence LM-X
-# Source drive is not known yet.
-# Enable after scan_folder is configured.
 # ------------------------------------------------------------
 
 [[devices]]
 
 device = "KeyenceLMX"
 
-enabled = false
+enabled = true
 
 run_wrapper = false
 
-scan_folder = ""
+scan_folder = "Q:/"
 
 did_target = '\\vt1.vitesco.com\SMT\didv0776\DataTransfer\Keyence_LMX_Data'
-
-index_output_folder = "Powerbi_Index"
-index_output_file = "file_index.csv"
-
-preserve_root_file_suffixes = []
-
-excluded_index_folders = [
-    "Powerbi_Index",
-    "Powerbi_Details",
-    "Logs",
-]
-
-excluded_copy_folders = [
-    "System Volume Information",
-    "$RECYCLE.BIN",
-]
-
-include_statistics_folder_rows = false
-
-
-# ------------------------------------------------------------
-# Olympus DSX
-# Source drive is not known yet.
-# Enable after scan_folder is configured.
-# ------------------------------------------------------------
-
-[[devices]]
-
-device = "OlympusDSX"
-
-enabled = false
-
-run_wrapper = false
-
-scan_folder = ""
-
-did_target = '\\vt1.vitesco.com\SMT\didv0776\DataTransfer\Olympus_DSX_Data'
 
 index_output_folder = "Powerbi_Index"
 index_output_file = "file_index.csv"
