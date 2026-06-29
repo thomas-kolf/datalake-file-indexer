@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """
 Creates one searchable file_index_YYYYMMDD.csv per configured machine.
 
@@ -19,10 +17,11 @@ Behavior:
 - continues processing other machines if one machine is unavailable
 """
 
+
+from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import quote
 import csv
 import shutil
 import sys
@@ -41,7 +40,6 @@ COLUMNS = [
     "device",
     "product_area",
     "file_path",
-    "download_link",
 ]
 
 
@@ -58,20 +56,6 @@ class IndexResult:
 def load_config() -> dict:
     with CONFIG_PATH.open("rb") as file:
         return tomllib.load(file)
-
-
-def build_download_link(
-    file_path: str,
-) -> str:
-    encoded_path = quote(
-        file_path,
-        safe="",
-    )
-
-    return (
-        f"datalakedownloader://download?"
-        f"path={encoded_path}"
-    )
 
 
 def get_index_timestamp() -> str:
@@ -199,9 +183,6 @@ def create_file_row(
             product_rules=product_rules,
         ),
         "file_path": path_text,
-        "download_link": build_download_link(
-            path_text
-        ),
     }
 
 
@@ -229,9 +210,6 @@ def create_folder_row(
         "device": device,
         "product_area": "General",
         "file_path": path_text,
-        "download_link": build_download_link(
-            path_text
-        ),
     }
 
 
