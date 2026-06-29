@@ -4,7 +4,7 @@
 #
 # The pipeline:
 # - scans configured machine folders on the jump host
-# - creates one file_index.csv per enabled machine
+# - creates one dated file_index_YYYYMMDD.csv per enabled machine
 # - transfers the complete machine-folder content into DiD
 # - deletes transferred source content only after verified transfer
 # - writes one daily machine-status CSV
@@ -39,7 +39,9 @@ file_prefix = "Keyence"
 #
 # \\vt1.vitesco.com\SMT\didv0776\DataTransfer\Logs\
 # ├── KeyenceVR5200\
-# └── KeyenceVHX\
+# ├── KeyenceVHX\
+# ├── KeyenceLMX\
+# └── OlympusDSX\
 
 detailed_log_root = '\\vt1.vitesco.com\SMT\didv0776\DataTransfer\Logs'
 
@@ -66,7 +68,7 @@ scan_folder = "V:/"
 did_target = '\\vt1.vitesco.com\SMT\didv0776\DataTransfer\Keyence_VR5200_Data'
 
 # Generated index:
-# V:/Powerbi_Index/file_index.csv
+# V:/Powerbi_Index/file_index_YYYYMMDD.csv
 index_output_folder = "Powerbi_Index"
 index_output_file = "file_index.csv"
 
@@ -110,6 +112,8 @@ scan_folder = "U:/"
 
 did_target = '\\vt1.vitesco.com\SMT\didv0776\DataTransfer\Keyence_VHX_Data'
 
+# Generated index:
+# U:/Powerbi_Index/file_index_YYYYMMDD.csv
 index_output_folder = "Powerbi_Index"
 index_output_file = "file_index.csv"
 
@@ -145,6 +149,45 @@ scan_folder = "Q:/"
 
 did_target = '\\vt1.vitesco.com\SMT\didv0776\DataTransfer\Keyence_LMX_Data'
 
+# Generated index:
+# Q:/Powerbi_Index/file_index_YYYYMMDD.csv
+index_output_folder = "Powerbi_Index"
+index_output_file = "file_index.csv"
+
+preserve_root_file_suffixes = []
+
+excluded_index_folders = [
+    "Powerbi_Index",
+    "Powerbi_Details",
+    "Logs",
+]
+
+excluded_copy_folders = [
+    "System Volume Information",
+    "$RECYCLE.BIN",
+]
+
+include_statistics_folder_rows = false
+
+
+# ------------------------------------------------------------
+# Olympus DSX
+# ------------------------------------------------------------
+
+[[devices]]
+
+device = "OlympusDSX"
+
+enabled = true
+
+run_wrapper = false
+
+scan_folder = "R:/"
+
+did_target = '\\vt1.vitesco.com\SMT\didv0776\DataTransfer\Olympus_DSX_Data'
+
+# Generated index:
+# R:/Powerbi_Index/file_index_YYYYMMDD.csv
 index_output_folder = "Powerbi_Index"
 index_output_file = "file_index.csv"
 
