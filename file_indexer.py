@@ -39,6 +39,7 @@ COLUMNS = [
     "indexed_timestamp",
     "device",
     "product_area",
+    "artifact_group_id",
     "file_path",
 ]
 
@@ -134,6 +135,19 @@ def is_date_folder_name(
     )
 
 
+def extract_artifact_group_id(file_name: str) -> str:
+    start_marker = "_Emb_GaN_Celle_"
+    end_marker = "_VR-5200"
+
+    start_pos = file_name.find(start_marker)
+    end_pos = file_name.find(end_marker)
+
+    if start_pos == -1 or end_pos == -1 or end_pos <= start_pos:
+        return ""
+
+    return file_name[start_pos + len(start_marker):end_pos]
+
+
 def is_inside_excluded_folder(
     file_path: Path,
     scan_folder: Path,
@@ -182,6 +196,9 @@ def create_file_row(
             file_path=file_path,
             product_rules=product_rules,
         ),
+        "artifact_group_id": extract_artifact_group_id(
+            file_path.name
+        ),
         "file_path": path_text,
     }
 
@@ -209,6 +226,7 @@ def create_folder_row(
         "indexed_timestamp": indexed_timestamp,
         "device": device,
         "product_area": "General",
+        "artifact_group_id": "",
         "file_path": path_text,
     }
 
