@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """
 Creates one searchable file_index_YYYYMMDD.csv per configured machine.
 
@@ -19,10 +17,11 @@ Behavior:
 - continues processing other machines if one machine is unavailable
 """
 
+
+from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import quote
 import csv
 import shutil
 import sys
@@ -42,8 +41,8 @@ COLUMNS = [
     "indexed_timestamp",
     "device",
     "product_area",
+    "artifact_group_id",
     "file_path",
-    "download_link",
 ]
 
 
@@ -60,20 +59,6 @@ class IndexResult:
 def load_config() -> dict:
     with CONFIG_PATH.open("rb") as file:
         return tomllib.load(file)
-
-
-def build_download_link(
-    file_path: str,
-) -> str:
-    encoded_path = quote(
-        file_path,
-        safe="",
-    )
-
-    return (
-        f"datalakedownloader://download?"
-        f"path={encoded_path}"
-    )
 
 
 def get_index_timestamp() -> str:
@@ -152,6 +137,19 @@ def is_date_folder_name(
     )
 
 
+def extract_artifact_group_id(file_name: str) -> str:
+    start_marker = "_Emb_GaN_Celle_"
+    end_marker = "_VR-5200"
+
+    start_pos = file_name.find(start_marker)
+    end_pos = file_name.find(end_marker)
+
+    if start_pos == -1 or end_pos == -1 or end_pos <= start_pos:
+        return ""
+
+    return file_name[start_pos + len(start_marker):end_pos]
+
+
 def is_inside_excluded_folder(
     file_path: Path,
     scan_folder: Path,
@@ -200,10 +198,10 @@ def create_file_row(
             file_path=file_path,
             product_rules=product_rules,
         ),
-        "file_path": path_text,
-        "download_link": build_download_link(
-            path_text
+        "artifact_group_id": extract_artifact_group_id(
+            file_path.name
         ),
+        "file_path": path_text,
     }
 
 
@@ -230,10 +228,8 @@ def create_folder_row(
         "indexed_timestamp": indexed_timestamp,
         "device": device,
         "product_area": "General",
+        "artifact_group_id": "",
         "file_path": path_text,
-        "download_link": build_download_link(
-            path_text
-        ),
     }
 
 
@@ -481,7 +477,7 @@ def create_file_index_for_device(
 
         if "vr5200" in normalized_device:
             dmc_output_dir = (
-                output_path.parent.parent
+                scan_folder
                 / "Powerbi_DMC"
             )
 
