@@ -1,22 +1,134 @@
 from pathlib import Path
 import csv
-from datetime import datetime
+import re
+from datetime import date, datetime
+
 from openpyxl import load_workbook
 
 
-# Für lokalen Test anpassen
+# Nur für einen lokalen Einzeltest relevant.
+# Beim Import durch file_indexer.py werden diese Pfade nicht verwendet.
 SCAN_DIR = Path(r"C:\Test\zag_test")
 OUTPUT_DIR = Path(r"C:\Test\zag_test")
 DEVICE = "KeyenceVR5200"
 
 
-def read_dmcs_from_xlsx(xlsx_path: Path) -> list[tuple[str, str]]:
+FIELDNAMES = [
+    "dmc",
+    "device",
+    "file_name",
+    "extension",
+    "source_xlsx",
+    "source_cell",
+    "measurement_timestamp",
+]
+
+
+# Erkennt Zeitstempel innerhalb von Werten wie:
+# VR-20251209_150020
+# 20251209_150020
+# 20251209-150020
+TIMESTAMP_PATTERN = re.compile(
+    r"(?<!\d)\d{8}[_-]\d{6}(?!\d)"
+)
+
+
+def is_timestamp_instead_of_dmc(
+    value: object,
+) -> bool:
     """
-    Reads DMC values from column A starting at A3.
-    Stops at the first empty cell.
+    Checks whether column A contains a timestamp-based value
+    instead of an actual DMC.
+
+    Examples recognized as timestamps:
+        VR-20251209_150020
+        20251209_150020
+    """
+    if isinstance(value, (datetime, date)):
+        return True
+
+    if value is None:
+        return False
+
+    text = str(value).strip()
+
+    if text == "":
+        return False
+
+    return TIMESTAMP_PATTERN.search(text) is not None
+
+
+def normalize_dmc(
+    value: object,
+) -> str:
+    """
+    Converts the Excel DMC value into a clean string.
+
+    Example:
+        96.0 -> 96
+    """
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+
+    return str(value).strip()
+
+
+def format_measurement_timestamp(
+    value: object,
+) -> str:
+    """
+    Formats the measurement timestamp from column F.
+
+    Output:
+        DD.MM.YYYY HH:MM:SS
+    """
+    if value is None or str(value).strip() == "":
+        return ""
+
+    if isinstance(value, datetime):
+        return value.strftime(
+            "%d.%m.%Y %H:%M:%S"
+        )
+
+    if isinstance(value, date):
+        return value.strftime(
+            "%d.%m.%Y 00:00:00"
+        )
+
+    return str(value).strip()
+
+
+def read_dmcs_from_xlsx(
+    xlsx_path: Path,
+) -> list[tuple[str, str, str]]:
+    """
+    Reads values from column A starting at A3.
+
+    The measurement timestamp is read from column F
+    in the same row.
+
+    Examples:
+        DMC from A3
+        Measurement timestamp from F3
+
+        DMC from A4
+        Measurement timestamp from F4
+
+    Reading stops at the first empty cell in column A.
+
+    If column A contains a timestamp-based value instead
+    of a DMC, the DMC is stored as:
+        missing_dmc
 
     Returns:
-        [(dmc, source_cell), ...]
+        [
+            (
+                dmc,
+                source_cell,
+                measurement_timestamp,
+            ),
+            ...
+        ]
     """
     workbook = load_workbook(
         xlsx_path,
@@ -26,19 +138,45 @@ def read_dmcs_from_xlsx(xlsx_path: Path) -> list[tuple[str, str]]:
 
     try:
         sheet = workbook.active
-        result = []
+        result: list[tuple[str, str, str]] = []
 
         row = 3
 
         while True:
-            cell_ref = f"A{row}"
-            value = sheet[cell_ref].value
+            source_cell = f"A{row}"
+            timestamp_cell = f"F{row}"
 
-            if value is None or str(value).strip() == "":
+            dmc_value = sheet[source_cell].value
+            timestamp_value = sheet[timestamp_cell].value
+
+            if (
+                dmc_value is None
+                or str(dmc_value).strip() == ""
+            ):
                 break
 
-            dmc = str(value).strip()
-            result.append((dmc, cell_ref))
+            if is_timestamp_instead_of_dmc(
+                dmc_value
+            ):
+                dmc = "missing_dmc"
+            else:
+                dmc = normalize_dmc(
+                    dmc_value
+                )
+
+            measurement_timestamp = (
+                format_measurement_timestamp(
+                    timestamp_value
+                )
+            )
+
+            result.append(
+                (
+                    dmc,
+                    source_cell,
+                    measurement_timestamp,
+                )
+            )
 
             row += 1
 
@@ -53,22 +191,48 @@ def create_dmc_file_index(
     output_dir: Path,
     device: str,
 ) -> Path | None:
-    rows = []
+    """
+    Scans the provided scan directory for .zag files.
 
-    now = datetime.now()
-    index_date = now.strftime("%Y%m%d")
-    indexed_timestamp = now.strftime("%d.%m.%Y %H:%M:%S")
+    For each .zag file:
+    - finds the matching same-stem .xlsx
+    - reads DMCs from column A
+    - reads measurement timestamps from column F
+    - writes one row for the .xlsx
+    - writes one row for the .zag
 
-    output_csv = output_dir / f"emb_dmc_search_index_{index_date}.csv"
+    Output example:
+        emb_dmc_search_index_20260710.csv
+    """
+    scan_dir = Path(scan_dir)
+    output_dir = Path(output_dir)
 
-    zag_files = sorted(scan_dir.rglob("*.zag"))
+    rows: list[dict[str, str]] = []
+
+    index_date = datetime.now().strftime(
+        "%Y%m%d"
+    )
+
+    output_csv = (
+        output_dir
+        / f"emb_dmc_search_index_{index_date}.csv"
+    )
+
+    zag_files = sorted(
+        scan_dir.rglob("*.zag")
+    )
 
     if not zag_files:
-        print(f"No .zag files found in: {scan_dir}")
+        print(
+            f"No .zag files found in: "
+            f"{scan_dir}"
+        )
         return None
 
     for zag_path in zag_files:
-        xlsx_path = zag_path.with_suffix(".xlsx")
+        xlsx_path = zag_path.with_suffix(
+            ".xlsx"
+        )
 
         if not xlsx_path.exists():
             print(
@@ -78,41 +242,64 @@ def create_dmc_file_index(
             continue
 
         try:
-            dmcs = read_dmcs_from_xlsx(xlsx_path)
+            dmc_rows = read_dmcs_from_xlsx(
+                xlsx_path
+            )
+
         except Exception as error:
             print(
-                f"ERROR: Could not read {xlsx_path.name}: "
+                f"ERROR: Could not read "
+                f"{xlsx_path.name}: "
                 f"{error}"
             )
             continue
 
-        if not dmcs:
-            print(f"WARNING: No DMCs found in {xlsx_path.name}")
+        if not dmc_rows:
+            print(
+                f"WARNING: No usable rows found in "
+                f"{xlsx_path.name}"
+            )
             continue
 
-        for dmc, source_cell in dmcs:
-            for linked_file in (xlsx_path, zag_path):
-                rows.append({
-                    "dmc": dmc,
-                    "device": device,
-                    "file_name": linked_file.name,
-                    "extension": linked_file.suffix.lower().lstrip("."),
-                    "source_xlsx": xlsx_path.name,
-                    "source_cell": source_cell,
-                    "indexed_timestamp": indexed_timestamp,
-                })
+        for (
+            dmc,
+            source_cell,
+            measurement_timestamp,
+        ) in dmc_rows:
+            for linked_file in (
+                xlsx_path,
+                zag_path,
+            ):
+                rows.append(
+                    {
+                        "dmc": dmc,
+                        "device": device,
+                        "file_name": linked_file.name,
+                        "extension": (
+                            linked_file
+                            .suffix
+                            .lower()
+                            .lstrip(".")
+                        ),
+                        "source_xlsx": xlsx_path.name,
+                        "source_cell": source_cell,
+                        "measurement_timestamp": (
+                            measurement_timestamp
+                        ),
+                    }
+                )
 
-    output_dir.mkdir(parents=True, exist_ok=True)
+    if not rows:
+        print(
+            "No valid DMC rows found. "
+            "No DMC index created."
+        )
+        return None
 
-    fieldnames = [
-        "dmc",
-        "device",
-        "file_name",
-        "extension",
-        "source_xlsx",
-        "source_cell",
-        "indexed_timestamp",
-    ]
+    output_dir.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
 
     with output_csv.open(
         "w",
@@ -121,15 +308,22 @@ def create_dmc_file_index(
     ) as csvfile:
         writer = csv.DictWriter(
             csvfile,
-            fieldnames=fieldnames,
+            fieldnames=FIELDNAMES,
             delimiter=",",
         )
 
         writer.writeheader()
         writer.writerows(rows)
 
-    print(f"Created: {output_csv}")
-    print(f"Rows written: {len(rows)}")
+    print(
+        f"Created DMC index: "
+        f"{output_csv}"
+    )
+
+    print(
+        f"DMC index rows written: "
+        f"{len(rows)}"
+    )
 
     return output_csv
 
