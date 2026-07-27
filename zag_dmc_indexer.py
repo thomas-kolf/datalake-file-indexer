@@ -186,6 +186,35 @@ def read_dmcs_from_xlsx(
         workbook.close()
 
 
+def find_matching_xlsx(
+    zag_path: Path,
+) -> Path | None:
+    """
+    Finds the XLSX file belonging to a ZAG file.
+
+    Supported filename variants:
+        same_name.xlsx
+        same_name_Haupt.xlsx
+
+    If both files exist, same_name.xlsx is preferred.
+    """
+    normal_xlsx_path = zag_path.with_suffix(
+        ".xlsx"
+    )
+
+    haupt_xlsx_path = zag_path.with_name(
+        f"{zag_path.stem}_Haupt.xlsx"
+    )
+
+    if normal_xlsx_path.exists():
+        return normal_xlsx_path
+
+    if haupt_xlsx_path.exists():
+        return haupt_xlsx_path
+
+    return None
+
+
 def create_dmc_file_index(
     scan_dir: Path,
     output_dir: Path,
@@ -195,7 +224,7 @@ def create_dmc_file_index(
     Scans the provided scan directory for .zag files.
 
     For each .zag file:
-    - finds the matching same-stem .xlsx
+    - finds the matching .xlsx or _Haupt.xlsx
     - reads DMCs from column A
     - reads measurement timestamps from column F
     - writes one row for the .xlsx
@@ -230,14 +259,16 @@ def create_dmc_file_index(
         return None
 
     for zag_path in zag_files:
-        xlsx_path = zag_path.with_suffix(
-            ".xlsx"
+        xlsx_path = find_matching_xlsx(
+            zag_path
         )
 
-        if not xlsx_path.exists():
+        if xlsx_path is None:
             print(
                 f"WARNING: Matching .xlsx missing for "
-                f"{zag_path.name}"
+                f"{zag_path.name}. Expected either "
+                f"{zag_path.stem}.xlsx or "
+                f"{zag_path.stem}_Haupt.xlsx"
             )
             continue
 
