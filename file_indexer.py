@@ -13,6 +13,7 @@ Behavior:
   - Powerbi_Index
   - Powerbi_Details
   - Logs
+- skips unchanged .zit recipe files using an internal indexer registry
 - never moves, copies or deletes machine files
 - continues processing other machines if one machine is unavailable
 """
@@ -34,6 +35,21 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = SCRIPT_DIR / "config.toml"
 
 STATISTICS_FOLDER_NAME = "Statistics"
+RECIPE_FILE_EXTENSION = ".zit"
+
+INDEXER_STATE_DIR = SCRIPT_DIR / ".indexer_state"
+RECIPE_REGISTRY_PATH = (
+    INDEXER_STATE_DIR
+    / "indexed_recipe_files.csv"
+)
+
+RECIPE_REGISTRY_COLUMNS = [
+    "device",
+    "file_path",
+    "file_name",
+    "modified_timestamp",
+    "last_indexed_timestamp",
+]
 
 COLUMNS = [
     "file_name",
@@ -83,6 +99,23 @@ def get_index_file_date() -> str:
     )
 
 
+def get_file_modified_timestamp(
+    file_path: Path,
+) -> str:
+    """
+    Returns the file modification timestamp used by the
+    .zit recipe registry.
+
+    The value is only used internally by the indexer.
+    """
+
+    return datetime.fromtimestamp(
+        file_path.stat().st_mtime
+    ).strftime(
+        "%d.%m.%Y %H:%M:%S"
+    )
+
+
 def build_dated_output_path(
     output_path: Path,
 ) -> Path:
@@ -97,6 +130,208 @@ def build_dated_output_path(
 
     return output_path.with_name(
         f"{output_path.stem}_{date_suffix}{output_path.suffix}"
+    )
+
+
+def load_recipe_registry() -> dict[tuple[str, str], dict[str, str]]:
+    """
+    Loads the internal .zit recipe registry.
+
+    Key:
+    - device
+    - file_path
+
+    This registry is runtime state only and is not loaded into Power BI.
+    """
+
+    registry: dict[tuple[str, str], dict[str, str]] = {}
+
+    if not RECIPE_REGISTRY_PATH.is_file():
+        return registry
+
+    with RECIPE_REGISTRY_PATH.open(
+        "r",
+        newline="",
+        encoding="utf-8-sig",
+    ) as file:
+        reader = csv.DictReader(
+            file,
+            delimiter=",",
+        )
+
+        for row in reader:
+            device = row.get(
+                "device",
+                "",
+            ).strip()
+
+            file_path = row.get(
+                "file_path",
+                "",
+            ).strip()
+
+            if not device or not file_path:
+                continue
+
+            registry[
+                (
+                    device,
+                    file_path,
+                )
+            ] = {
+                "device": device,
+                "file_path": file_path,
+                "file_name": row.get(
+                    "file_name",
+                    "",
+                ),
+                "modified_timestamp": row.get(
+                    "modified_timestamp",
+                    "",
+                ),
+                "last_indexed_timestamp": row.get(
+                    "last_indexed_timestamp",
+                    "",
+                ),
+            }
+
+    return registry
+
+
+def write_recipe_registry(
+    registry: dict[tuple[str, str], dict[str, str]],
+) -> None:
+    """
+    Writes the internal .zit recipe registry atomically.
+    """
+
+    RECIPE_REGISTRY_PATH.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    temporary_output_path = (
+        RECIPE_REGISTRY_PATH
+        .with_suffix(".tmp")
+    )
+
+    rows = sorted(
+        registry.values(),
+        key=lambda row: (
+            row.get(
+                "device",
+                "",
+            ),
+            row.get(
+                "file_path",
+                "",
+            ).lower(),
+        ),
+    )
+
+    with temporary_output_path.open(
+        "w",
+        newline="",
+        encoding="utf-8",
+    ) as file:
+        writer = csv.DictWriter(
+            file,
+            fieldnames=RECIPE_REGISTRY_COLUMNS,
+            delimiter=",",
+        )
+
+        writer.writeheader()
+        writer.writerows(
+            rows
+        )
+
+    temporary_output_path.replace(
+        RECIPE_REGISTRY_PATH
+    )
+
+
+def is_recipe_file(
+    file_path: Path,
+) -> bool:
+    """
+    Returns True only for .zit recipe files.
+    """
+
+    return (
+        file_path
+        .suffix
+        .lower()
+        == RECIPE_FILE_EXTENSION
+    )
+
+
+def create_recipe_registry_row(
+    file_path: Path,
+    device: str,
+    indexed_timestamp: str,
+) -> dict[str, str]:
+    path_text = str(
+        file_path
+    )
+
+    return {
+        "device": device,
+        "file_path": path_text,
+        "file_name": file_path.name,
+        "modified_timestamp": get_file_modified_timestamp(
+            file_path
+        ),
+        "last_indexed_timestamp": indexed_timestamp,
+    }
+
+
+def should_index_recipe_file(
+    file_path: Path,
+    device: str,
+    indexed_timestamp: str,
+    recipe_registry: dict[tuple[str, str], dict[str, str]],
+) -> tuple[bool, dict[str, str]]:
+    """
+    Decides whether a .zit recipe file should be written into
+    today's file_index_YYYYMMDD.csv.
+
+    Rules:
+    - unknown .zit file -> index
+    - known .zit file with changed modified_timestamp -> index
+    - known .zit file with unchanged modified_timestamp -> skip
+    """
+
+    registry_row = create_recipe_registry_row(
+        file_path=file_path,
+        device=device,
+        indexed_timestamp=indexed_timestamp,
+    )
+
+    registry_key = (
+        registry_row["device"],
+        registry_row["file_path"],
+    )
+
+    existing_registry_row = recipe_registry.get(
+        registry_key
+    )
+
+    if (
+        existing_registry_row
+        and existing_registry_row.get(
+            "modified_timestamp",
+            "",
+        )
+        == registry_row["modified_timestamp"]
+    ):
+        return (
+            False,
+            registry_row,
+        )
+
+    return (
+        True,
+        registry_row,
     )
 
 
@@ -289,6 +524,8 @@ def collect_rows_for_device(
     excluded_folders: list[str],
     include_statistics_folder_rows: bool,
     indexed_timestamp: str,
+    recipe_registry: dict[tuple[str, str], dict[str, str]],
+    recipe_registry_updates: dict[tuple[str, str], dict[str, str]],
 ) -> list[dict]:
     rows = []
 
@@ -317,6 +554,28 @@ def collect_rows_for_device(
             excluded_folders=excluded_folders,
         ):
             continue
+
+        if is_recipe_file(
+            file_path
+        ):
+            should_index, registry_row = should_index_recipe_file(
+                file_path=file_path,
+                device=device,
+                indexed_timestamp=indexed_timestamp,
+                recipe_registry=recipe_registry,
+            )
+
+            if not should_index:
+                continue
+
+            registry_key = (
+                registry_row["device"],
+                registry_row["file_path"],
+            )
+
+            recipe_registry_updates[
+                registry_key
+            ] = registry_row
 
         rows.append(
             create_file_row(
@@ -449,6 +708,9 @@ def create_file_index_for_device(
     )
 
     try:
+        recipe_registry = load_recipe_registry()
+        recipe_registry_updates: dict[tuple[str, str], dict[str, str]] = {}
+
         rows = collect_rows_for_device(
             scan_folder=scan_folder,
             device=device,
@@ -462,12 +724,23 @@ def create_file_index_for_device(
                 False,
             ),
             indexed_timestamp=indexed_timestamp,
+            recipe_registry=recipe_registry,
+            recipe_registry_updates=recipe_registry_updates,
         )
 
         write_csv(
             rows=rows,
             output_path=output_path,
         )
+
+        if recipe_registry_updates:
+            recipe_registry.update(
+                recipe_registry_updates
+            )
+
+            write_recipe_registry(
+                recipe_registry
+            )
 
         normalized_device = "".join(
             character
