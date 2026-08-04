@@ -41,6 +41,24 @@ call :ProcessMachine BJ955-0218  "C:\PBS200\Charts\BJ955-0218 (BJ955-0218)"   "\
 call :ProcessMachine SW10851-0138  "C:\PBS200\Charts\SW10851-0138 (SW10851-0138)"   "\\vt1.vitesco.com\SMT\didv0776\DataTransfer\Hesse_Machine\SW10851-0138_Data"
 
 
+REM ----Keyence Processing-----
+REM Keyence/metrology files need preprocessing before copy: wrapper, file indexer and embedded DMC extraction.
+REM The normal ProcessMachine path only copies root files, therefore metrology uses a dedicated recursive copy.
+
+call :RunKeyencePipeline
+
+if errorlevel 1 (
+  >>"%resultFile%" echo METROLOGY_PREPROCESSING_FAILED_SKIP_METROLOGY_COPY
+  echo !current_date!,!current_time!,MetrologyPreprocessing,0,0,0,,PREPROCESSING_FAILED_SKIP_METROLOGY_COPY>>"%ALL_LOG_FILE%"
+) else (
+  call :ProcessMetrology KeyenceVR5200 "V:\" "\\vt1.vitesco.com\SMT\didv0776\DataTransfer\Keyence_VR5200_Data"
+  call :ProcessMetrology KeyenceVHX    "U:\" "\\vt1.vitesco.com\SMT\didv0776\DataTransfer\Keyence_VHX_Data"
+  call :ProcessMetrology KeyenceLMX    "Q:\" "\\vt1.vitesco.com\SMT\didv0776\DataTransfer\Keyence_LMX_Data"
+  call :ProcessMetrology OlympusDSX    "R:\" "\\vt1.vitesco.com\SMT\didv0776\DataTransfer\Olympus_DSX_Data"
+)
+
+REM ----Keyence Processing-----
+
 >>"%resultFile%" echo.
 >>"%resultFile%" echo Finished=%date% %time%
 goto :EOF
@@ -173,6 +191,190 @@ REM NEW: one summary row for this machine in AllMachines log
 echo !current_date!,!current_time!,!MACHINE!,!MachineOn!,!NrLogsCopied!,!NrLogsDeleted!,!FreeMemory!,!MachineError!>>"%ALL_LOG_FILE%"
 
 exit /b
+
+
+REM ----Keyence Processing-----
+
+
+:RunKeyencePipeline
+set "KEYENCE_PIPELINE_DIR=C:\keyence-pipeline\datalake-file-indexer"
+
+>>"%resultFile%" echo.
+>>"%resultFile%" echo === RunKeyencePipeline ===
+>>"%resultFile%" echo PipelineDir=%KEYENCE_PIPELINE_DIR%
+
+if not exist "%KEYENCE_PIPELINE_DIR%\keyence_orchestrator.py" (
+  >>"%resultFile%" echo KEYENCE_ORCHESTRATOR_NOT_FOUND
+  exit /b 1
+)
+
+pushd "%KEYENCE_PIPELINE_DIR%"
+python keyence_orchestrator.py >> "%resultFile%" 2>&1
+set "KeyencePipelineExit=!ERRORLEVEL!"
+popd
+
+>>"%resultFile%" echo KeyencePipelineExit=!KeyencePipelineExit!
+
+if not "!KeyencePipelineExit!"=="0" (
+  exit /b !KeyencePipelineExit!
+)
+
+exit /b 0
+
+
+:ProcessMetrology
+set "MACHINE=%~1"
+set "SRC=%~2"
+set "DST=%~3"
+set "MachineOn=0"
+set "NrLogsCopied=0"
+set "NrLogsDeleted=0"
+set "MachineError="
+
+>>"%resultFile%" echo.
+>>"%resultFile%" echo === %MACHINE% METROLOGY ===
+>>"%resultFile%" echo Source=%SRC%
+>>"%resultFile%" echo Destination=%DST%
+
+REM FreeMemory: derive drive letter from SRC like "V:\" => "V"
+set "SRC_DRIVE=%SRC:~0,1%"
+set "FreeMemory="
+if not "%SRC_DRIVE%"=="" (
+  for /f "usebackq delims=" %%m in (`
+    powershell -NoLogo -NoProfile -Command ^
+      "$d='%SRC_DRIVE%'; try { $di=Get-PSDrive -Name $d -ErrorAction Stop; [string]$di.Free } catch { '' }"
+  `) do set "FreeMemory=%%m"
+)
+>>"%resultFile%" echo FreeMemory=%FreeMemory%
+
+set "LOG_DIR=%LOG_BASE%\%MACHINE%"
+if not exist "%LOG_DIR%" mkdir "%LOG_DIR%"
+set "LOG_FILE=%LOG_DIR%\%MACHINE%_%current_date%.csv"
+if not exist "%LOG_FILE%" echo Date,Time,MachineOn,NrLogsCopied,FileName,Error>>"%LOG_FILE%"
+
+set "ROBOCOPY_LOG=%LOG_DIR%\Robocopy_%MACHINE%_%current_date%.txt"
+
+if not exist "!SRC!" (
+  set "MachineError=SRC_NOT_FOUND"
+  echo !current_date!,!current_time!,0,0,,SRC_NOT_FOUND>>"%LOG_FILE%"
+  >>"%resultFile%" echo SRC_NOT_FOUND: !SRC!
+  echo !current_date!,!current_time!,!MACHINE!,0,0,0,!FreeMemory!,!MachineError!>>"%ALL_LOG_FILE%"
+  exit /b
+)
+
+set "MachineOn=1"
+if not exist "!DST!" mkdir "!DST!"
+
+REM Count transferable files before copy.
+REM Root-level .zit recipe files are copied but not counted/deleted.
+set "ExpectedFiles=0"
+for /f "usebackq delims=" %%F in (`dir /b /s /a:-d "!SRC!" 2^>nul`) do (
+  set "SkipFile=0"
+
+  echo %%~fF | findstr /I /C:"\System Volume Information\" /C:"\$RECYCLE.BIN\" >nul
+  if not errorlevel 1 set "SkipFile=1"
+
+  if "!SkipFile!"=="0" (
+    if /I "%%~dpF"=="!SRC!" (
+      if /I not "%%~xF"==".zit" set /a ExpectedFiles+=1
+    ) else (
+      set /a ExpectedFiles+=1
+    )
+  )
+)
+
+REM Recursive metrology copy. This keeps the existing source folder structure.
+robocopy "!SRC!" "!DST!" /E /COPY:DAT /DCOPY:T /R:2 /W:2 /XJ /XD "System Volume Information" "$RECYCLE.BIN" /LOG+:"!ROBOCOPY_LOG!" /TEE
+set "RoboExit=!ERRORLEVEL!"
+
+if !RoboExit! GTR 7 (
+  set "MachineError=COPY_FAILED"
+  echo !current_date!,!current_time!,!MachineOn!,0,METROLOGY_FOLDER,COPY_FAILED>>"%LOG_FILE%"
+  >>"%resultFile%" echo METROLOGY_COPY_FAILED: !SRC! ROBOCOPY_EXIT_!RoboExit!
+  echo !current_date!,!current_time!,!MACHINE!,!MachineOn!,0,0,!FreeMemory!,!MachineError!>>"%ALL_LOG_FILE%"
+  exit /b
+)
+
+REM Verify copied files before deleting source content.
+set "MissingTargetFiles=0"
+set "SRC_PREFIX=!SRC!"
+if not "!SRC_PREFIX:~-1!"=="\" set "SRC_PREFIX=!SRC_PREFIX!\"
+
+for /f "usebackq delims=" %%F in (`dir /b /s /a:-d "!SRC!" 2^>nul`) do (
+  set "SkipFile=0"
+
+  echo %%~fF | findstr /I /C:"\System Volume Information\" /C:"\$RECYCLE.BIN\" >nul
+  if not errorlevel 1 set "SkipFile=1"
+
+  if "!SkipFile!"=="0" (
+    set "FULL_PATH=%%~fF"
+    set "REL_PATH=!FULL_PATH:%SRC_PREFIX%=!"
+    if not exist "!DST!\!REL_PATH!" (
+      set /a MissingTargetFiles+=1
+      >>"%resultFile%" echo MISSING_TARGET_FILE: !DST!\!REL_PATH!
+    )
+  )
+)
+
+if not "!MissingTargetFiles!"=="0" (
+  set "MachineError=VERIFY_COPY_FAILED"
+  echo !current_date!,!current_time!,!MachineOn!,0,METROLOGY_FOLDER,VERIFY_COPY_FAILED>>"%LOG_FILE%"
+  >>"%resultFile%" echo METROLOGY_VERIFY_FAILED: !MissingTargetFiles! missing files. Source not deleted.
+  echo !current_date!,!current_time!,!MACHINE!,!MachineOn!,0,0,!FreeMemory!,!MachineError!>>"%ALL_LOG_FILE%"
+  exit /b
+)
+
+set "NrLogsCopied=!ExpectedFiles!"
+echo !current_date!,!current_time!,!MachineOn!,!NrLogsCopied!,METROLOGY_FOLDER,>>"%LOG_FILE%"
+>>"%resultFile%" echo METROLOGY_COPIED_AND_VERIFIED: !SRC! to !DST!
+
+REM Delete source content only after successful copy verification.
+REM Root-level .zit recipe files are preserved.
+for /f "usebackq delims=" %%F in (`dir /b /a:-d "!SRC!" 2^>nul`) do (
+  if /I "%%~xF"==".zit" (
+    >>"%resultFile%" echo KEPT_RECIPE_FILE: !SRC!\%%F
+  ) else (
+    del /f /q "!SRC!\%%F"
+    if errorlevel 1 (
+      if not defined MachineError set "MachineError=DELETE_FAILED"
+      echo !current_date!,!current_time!,!MachineOn!,!NrLogsCopied!,%%F,DELETE_FAILED>>"%LOG_FILE%"
+      >>"%resultFile%" echo DELETE_FAILED: !SRC!\%%F
+    ) else (
+      set /a NrLogsDeleted+=1
+      >>"%resultFile%" echo DELETED_FILE: !SRC!\%%F
+    )
+  )
+)
+
+for /d %%D in ("!SRC!\*") do (
+  if /I "%%~nxD"=="System Volume Information" (
+    >>"%resultFile%" echo KEPT_EXCLUDED_FOLDER: %%~fD
+  ) else if /I "%%~nxD"=="$RECYCLE.BIN" (
+    >>"%resultFile%" echo KEPT_EXCLUDED_FOLDER: %%~fD
+  ) else (
+    set "FolderFileCount=0"
+    for /f "usebackq delims=" %%C in (`dir /b /s /a:-d "%%~fD" 2^>nul`) do (
+      set /a FolderFileCount+=1
+    )
+
+    call :DeleteWithRetry "%%~fD" 5 2 delErr
+    if errorlevel 1 (
+      if not defined MachineError set "MachineError=DELETE_FAILED"
+      echo !current_date!,!current_time!,!MachineOn!,!NrLogsCopied!,%%~nxD,DELETE_FAILED>>"%LOG_FILE%"
+      >>"%resultFile%" echo DELETE_FAILED: %%~fD ^| !delErr!
+    ) else (
+      set /a NrLogsDeleted+=!FolderFileCount!
+      >>"%resultFile%" echo DELETED_FOLDER: %%~fD
+    )
+  )
+)
+
+echo !current_date!,!current_time!,!MACHINE!,!MachineOn!,!NrLogsCopied!,!NrLogsDeleted!,!FreeMemory!,!MachineError!>>"%ALL_LOG_FILE%"
+
+exit /b
+
+
+REM ----Keyence Processing-----
 
 :GetAvailableName
 setlocal enabledelayedexpansion
