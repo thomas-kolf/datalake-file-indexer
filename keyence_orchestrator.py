@@ -30,7 +30,7 @@ from file_indexer import (
 
 
 WRAPPER_REPO = Path(
-    r"C:\keyence-pipeline\keyence-wrapper"
+    r"C:\Processing\keyence-pipeline\keyence-wrapper"
 )
 
 WRAPPER_MAIN = (
