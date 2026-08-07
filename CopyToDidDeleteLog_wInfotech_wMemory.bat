@@ -497,7 +497,7 @@ for /f "usebackq delims=" %%F in (`dir /b /s /a:-d "!SRC!" 2^>nul`) do (
 
 REM Recursive metrology copy.
 REM This keeps the existing source folder structure.
-robocopy "!SRC!" "!DST!" /E /COPY:DAT /DCOPY:T /R:2 /W:2 /XJ /XD "System Volume Information" "$RECYCLE.BIN" /LOG+:"!ROBOCOPY_LOG!" /TEE
+robocopy "!SRC!" "!DST!" /S /COPY:DAT /DCOPY:T /R:2 /W:2 /XJ /XD "System Volume Information" "$RECYCLE.BIN" /LOG+:"!ROBOCOPY_LOG!" /TEE
 
 set "RoboExit=!ERRORLEVEL!"
 
