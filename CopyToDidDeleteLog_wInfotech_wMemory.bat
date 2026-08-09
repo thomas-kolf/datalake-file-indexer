@@ -496,8 +496,15 @@ for /f "usebackq delims=" %%F in (`dir /b /s /a:-d "!SRC!" 2^>nul`) do (
 )
 
 REM Recursive metrology copy.
-REM This keeps the existing source folder structure.
-robocopy "!SRC!" "!DST!" /S /COPY:DAT /DCOPY:T /R:2 /W:2 /XJ /XD "System Volume Information" "$RECYCLE.BIN" /LOG+:"!ROBOCOPY_LOG!" /TEE
+REM Robocopy cannot safely use a quoted drive-root path ending directly in "\".
+REM Therefore use "\." for the Robocopy source only.
+set "ROBO_SRC=!SRC!"
+
+if "!ROBO_SRC:~-1!"=="\" (
+    set "ROBO_SRC=!ROBO_SRC!."
+)
+
+robocopy "!ROBO_SRC!" "!DST!" /S /COPY:DAT /DCOPY:T /R:2 /W:2 /XJ /XD "System Volume Information" "$RECYCLE.BIN" /LOG+:"!ROBOCOPY_LOG!" /TEE
 
 set "RoboExit=!ERRORLEVEL!"
 
