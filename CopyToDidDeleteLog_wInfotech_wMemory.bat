@@ -561,20 +561,27 @@ echo !current_date!,!current_time!,!MachineOn!,!NrLogsCopied!,METROLOGY_FOLDER,>
 
 REM Delete source content only after successful copy verification.
 REM Root-level .zit recipe files are preserved.
+REM Normalize the source root for direct file deletion so V:\ does not become V:\\file.
+set "DELETE_SRC=!SRC!"
+
+if "!DELETE_SRC:~-1!"=="\" (
+    set "DELETE_SRC=!DELETE_SRC:~0,-1!"
+)
+
 for /f "usebackq delims=" %%F in (`dir /b /a:-d "!SRC!" 2^>nul`) do (
     if /I "%%~xF"==".zit" (
-        >>"%resultFile%" echo KEPT_RECIPE_FILE: !SRC!\%%F
+        >>"%resultFile%" echo KEPT_RECIPE_FILE: !DELETE_SRC!\%%F
     ) else (
-        del /f /q "!SRC!\%%F"
+        del /f /q "!DELETE_SRC!\%%F"
 
         if errorlevel 1 (
             if not defined MachineError set "MachineError=DELETE_FAILED"
 
             echo !current_date!,!current_time!,!MachineOn!,!NrLogsCopied!,%%F,DELETE_FAILED>>"%LOG_FILE%"
-            >>"%resultFile%" echo DELETE_FAILED: !SRC!\%%F
+            >>"%resultFile%" echo DELETE_FAILED: !DELETE_SRC!\%%F
         ) else (
             set /a NrLogsDeleted+=1
-            >>"%resultFile%" echo DELETED_FILE: !SRC!\%%F
+            >>"%resultFile%" echo DELETED_FILE: !DELETE_SRC!\%%F
         )
     )
 )
