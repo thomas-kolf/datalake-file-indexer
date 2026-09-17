@@ -9,7 +9,8 @@ Execution order:
 3. Loop through all enabled metrology devices.
 4. Create one machine-specific file_index_YYYYMMDD.csv per device.
 5. For Keyence VR-5200, the embedded DMC index is created inside the file indexer.
-6. Continue with the remaining machines if one machine fails.
+6. Write a non-blocking smoke test report for debugging.
+7. Continue with the remaining machines if one machine fails.
 
 Important:
 This script does not copy, move or delete machine-drive content.
@@ -26,6 +27,9 @@ from file_indexer import (
     get_enabled_devices,
     get_free_memory,
     load_config,
+)
+from metrology_smoketest import (
+    run_metrology_smoketest,
 )
 
 
@@ -109,6 +113,7 @@ def run_keyence_pipeline() -> list[str]:
     wrapper if required
     -> machine loop
        -> file indexer
+    -> non-blocking smoke test report
 
     Returns a list of errors.
     An empty list means that all enabled machines were indexed successfully.
@@ -220,6 +225,24 @@ def run_keyence_pipeline() -> list[str]:
             f"{device}: indexing completed successfully | "
             f"indexed_rows={index_result.indexed_rows} | "
             f"free_memory={free_memory}"
+        )
+
+    try:
+        smoke_report_path = run_metrology_smoketest(
+            config
+        )
+
+        if smoke_report_path is not None:
+            log(
+                f"Metrology smoke test report written: "
+                f"{smoke_report_path}"
+            )
+
+    except Exception as error:
+        log(
+            f"Metrology smoke test could not be written: "
+            f"{type(error).__name__}: "
+            f"{error}"
         )
 
     if errors:
