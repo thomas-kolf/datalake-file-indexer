@@ -1,5 +1,16 @@
 from __future__ import annotations
 
+"""
+Writes a non-blocking smoke test report for the metrology preprocessing chain.
+
+The smoke test runs after wrapper/indexer execution and before the central
+batch script performs copy/delete.
+
+Important:
+This module only writes a debug/report CSV.
+It does not stop the process and does not delete or move files.
+"""
+
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -19,6 +30,11 @@ EXPECTED_INDEX_COLUMNS = [
     "artifact_group_id",
     "file_path",
 ]
+
+EXCLUDED_FOLDERS = {
+    "System Volume Information",
+    "$RECYCLE.BIN",
+}
 
 
 @dataclass
@@ -65,11 +81,124 @@ def build_expected_index_path(
     )
 
 
+def is_in_excluded_folder(
+    file_path: Path,
+) -> bool:
+    return any(
+        folder_name in file_path.parts
+        for folder_name in EXCLUDED_FOLDERS
+    )
+
+
+def get_source_folder_stats(
+    scan_folder: Path,
+) -> tuple[int, int, int]:
+    """
+    Returns:
+    file_count, total_size_bytes, unreadable_file_count
+
+    Only system folders are excluded.
+    """
+
+    file_count = 0
+    total_size_bytes = 0
+    unreadable_file_count = 0
+
+    if not scan_folder.is_dir():
+        return file_count, total_size_bytes, unreadable_file_count
+
+    for file_path in scan_folder.rglob("*"):
+        if is_in_excluded_folder(
+            file_path
+        ):
+            continue
+
+        if not file_path.is_file():
+            continue
+
+        file_count += 1
+
+        try:
+            total_size_bytes += file_path.stat().st_size
+
+        except OSError:
+            unreadable_file_count += 1
+
+    return file_count, total_size_bytes, unreadable_file_count
+
+
+def add_source_folder_stats_rows(
+    report_rows: list[SmokeTestRow],
+    device: str,
+    scan_folder: Path,
+) -> None:
+    file_count, total_size_bytes, unreadable_file_count = (
+        get_source_folder_stats(
+            scan_folder
+        )
+    )
+
+    if file_count == 0:
+        report_rows.append(
+            SmokeTestRow(
+                device=device,
+                check="source_file_count",
+                status="WARNING",
+                details="Files: 0",
+            )
+        )
+
+    else:
+        report_rows.append(
+            SmokeTestRow(
+                device=device,
+                check="source_file_count",
+                status="OK",
+                details=f"Files: {file_count}",
+            )
+        )
+
+    source_size_mb = (
+        total_size_bytes
+        / 1024
+        / 1024
+    )
+
+    report_rows.append(
+        SmokeTestRow(
+            device=device,
+            check="source_data_size_mb",
+            status="OK",
+            details=f"Size: {source_size_mb:.2f} MB",
+        )
+    )
+
+    if unreadable_file_count > 0:
+        report_rows.append(
+            SmokeTestRow(
+                device=device,
+                check="source_unreadable_files",
+                status="WARNING",
+                details=f"Unreadable files: {unreadable_file_count}",
+            )
+        )
+
+    else:
+        report_rows.append(
+            SmokeTestRow(
+                device=device,
+                check="source_unreadable_files",
+                status="OK",
+                details="Unreadable files: 0",
+            )
+        )
+
+
 def check_index_file(
     device: str,
     index_file: Path,
 ) -> list[SmokeTestRow]:
-    rows = []
+    rows: list[SmokeTestRow] = []
 
     if not index_file.is_file():
         return [
@@ -174,12 +303,19 @@ def run_metrology_smoketest(
     config: dict,
 ) -> Path | None:
     """
-    Writes a non-blocking smoke test report for all enabled
-    metrology systems.
+    Writes one smoke test report for all enabled metrology systems.
 
-    Important:
-    This is only a debug/report method.
-    It does not stop copy/delete by itself.
+    The report contains:
+    - source folder availability
+    - number of files in the source folder
+    - total source folder data size
+    - Powerbi_Index folder availability
+    - existence/readability of today's file_index_YYYYMMDD.csv
+    - index header validation
+    - index row count
+
+    This function is non-blocking by design.
+    It returns the written report path if successful.
     """
 
     report_rows: list[SmokeTestRow] = []
@@ -195,6 +331,7 @@ def run_metrology_smoketest(
 
     for device_config in enabled_devices:
         device = device_config["device"]
+
         scan_folder = Path(
             device_config["scan_folder"]
         )
@@ -218,6 +355,12 @@ def run_metrology_smoketest(
                     details=str(scan_folder),
                 )
             )
+
+        add_source_folder_stats_rows(
+            report_rows=report_rows,
+            device=device,
+            scan_folder=scan_folder,
+        )
 
         index_folder = (
             scan_folder
