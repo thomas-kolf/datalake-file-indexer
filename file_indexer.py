@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 import csv
+import re
 import shutil
 import sys
 import tomllib
@@ -373,18 +374,33 @@ def is_date_folder_name(
 
 
 def extract_artifact_group_id(file_name: str) -> str:
-    start_marker = "_Emb_GaN_Celle_"
-    end_marker = "_VR-5200"
+    """
+    Extracts the artifact_group_id from standardized VR-5200 artifact names.
 
-    start_pos = file_name.find(start_marker)
-    end_pos = file_name.find(end_marker)
+    Expected naming principle:
+    ..._<cell_key>_VR-5200_...
 
-    if start_pos == -1 or end_pos == -1 or end_pos <= start_pos:
-        return ""
+    Examples:
+    20261007_081500_AllOnPCB_Cell_ABC123-07_VR-5200_IO.xlsx
+    -> ABC123-07
 
-    return file_name[start_pos + len(start_marker):end_pos]
+    20260506_133647_Emb_GaN_Celle_MISSING_DMC-07_VR-5200_IO.xlsx
+    -> MISSING_DMC-07
+    """
 
+    stem = Path(file_name).stem
 
+    match = re.search(
+        r"(MISSING_DMC-\d{2}|[^_]+-\d{2})_VR-5200(?:_|$)",
+        stem,
+        re.IGNORECASE,
+    )
+
+    if match:
+        return match.group(1)
+
+    return ""
+    
 def is_inside_excluded_folder(
     file_path: Path,
     scan_folder: Path,
